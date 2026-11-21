@@ -47,7 +47,10 @@ _state_dir() { mkdir -p "$1/docs/architecture/.state"; echo "$1/docs/architectur
 
 seed_ledger() { # ROOT FIXTURE|-   (test-only: writes ledger.json directly)
   local sd; sd=$(_state_dir "$1")
-  if [ "$2" = - ]; then cat >"$sd/ledger.json"; else cp "$2" "$sd/ledger.json"; fi
+  if [ "$2" = - ]; then
+    local tmp="$sd/ledger.json.tmp.$$"
+    cat >"$tmp" && mv "$tmp" "$sd/ledger.json"
+  else cp "$2" "$sd/ledger.json"; fi
 }
 
 set_state() { # ROOT JQ_EXPR   (test-only: edits state.json directly)

@@ -60,5 +60,16 @@ test_item_mode_code_ref_checked() { r=$(mk_checked)
 test_item_mode_without_root_uses_pwd() { r=$(mk_project brownfield)
   out=$( cd "$r" && printf '%s' '{"statement":"s","source":{"type":"code","ref":"src/main.c:2"}}' | ga check --item fact --json | jq -r '.errors[].code' )
   assert_eq "" "$out"; }
+test_seed_ledger_same_file_pipe_is_safe() { r=$(mk_checked); i=0
+  while [ $i -lt 20 ]; do
+    jq '(.items[]|select(.id=="Q-1")).impact="x"' "$(LP "$r")" | seed_ledger "$r" -
+    i=$((i+1))
+  done
+  assert_eq x "$(jq -r '.items[]|select(.id=="Q-1")|.impact' "$(LP "$r")")"; }
+# Simulates the refs-extraction jq failing (e.g. crash); must exit 2, not pass silently.
+test_refs_stage_jq_failure_is_not_silent() { r=$(mk_checked); edit "$r" '(.items[]|select(.id=="FACT-1")).source.ref="src/main.c:99"'
+  fk=$(mktemp -d); printf '%s\n' '#!/bin/bash' 'for a in "$@"; do [ "$a" = refs ] && exit 5; done' 'exec /usr/bin/jq "$@"' >"$fk/jq"
+  chmod +x "$fk/jq"
+  assert_status 2 env PATH="$fk:$PATH" "$CORE/bin/ga" --root "$r" check; }
 test_exit_codes_json() { r=$(mk_checked); assert_status 0 ga --root "$r" check --json
   edit "$r" '(.items[]|select(.id=="Q-1")).impact=""'; assert_status 1 ga --root "$r" check --json; }

@@ -4,7 +4,8 @@
 _ga_check_run() { # INPUT_FILE LEDGER_FLAG ROOT
   local in=$1 lflag=$2 root=$3 res refs id ref path line total
   res=$(jq -c --arg ledger "$lflag" --arg out errors -f "$GA_CORE/lib/check.jq" "$in") || return 2
-  refs=$(jq -r --arg ledger "$lflag" --arg out refs -f "$GA_CORE/lib/check.jq" "$in" | jq -r '.[] | [.id, .ref] | @tsv') || return 2
+  refs=$(jq -c --arg ledger "$lflag" --arg out refs -f "$GA_CORE/lib/check.jq" "$in") || return 2
+  refs=$(printf '%s' "$refs" | jq -r '.[] | [.id, .ref] | @tsv') || return 2
   local extra="[]" msg
   while IFS="$(printf '\t')" read -r id ref; do
     [ -n "$id" ] || continue
