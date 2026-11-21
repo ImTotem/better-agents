@@ -1,0 +1,1 @@
+{"type":"result","subtype":"success","is_error":false,"result":"{\"findings\":[{\"check\":1,\"target\":\"ASM-1\",\"claim\":\"main 함수에 이미 구현되어 있다\",\"evidence\":[{\"type\":\"file\",\"ref\":\"src/main.c:2\"},{\"type\":\"file\",\"ref\":\"src/main.c:1\"}]}]}"}

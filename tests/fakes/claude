@@ -14,6 +14,8 @@ for a in "$@"; do
       [ "$prev" = --model ] && model=$b
       prev=$b
     done
+    [ -n "${FAKE_P_DIR:-}" ] && [ -f "$FAKE_P_DIR/$model.sleep" ] && sleep "$(cat "$FAKE_P_DIR/$model.sleep")"
+    [ -n "${FAKE_P_DIR:-}" ] && [ -f "$FAKE_P_DIR/$model.rc" ] && exit "$(cat "$FAKE_P_DIR/$model.rc")"
     if [ -n "${FAKE_P_DIR:-}" ] && [ -n "$model" ] && [ -f "$FAKE_P_DIR/$model.json" ]; then
       cat "$FAKE_P_DIR/$model.json"
     else

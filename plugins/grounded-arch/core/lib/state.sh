@@ -80,14 +80,24 @@ cmd_init() {
 
 # Builds the status JSON in one place; extend the object here.
 _ga_status_json() { # ROOT
-  local sd
+  local sd rp extra h
   sd=$(ga_state_dir "$1")
-  jq -c --slurpfile l "$(ga_ledger_path "$1")" '
+  rp=$sd/report.json
+  extra='{"report_fresh":false,"panel_ok":false,"findings_unprocessed":0,"build_ok":null}'
+  if [ -f "$rp" ] && jq -e 'type == "object"' "$rp" >/dev/null 2>&1; then
+    h=$(ga_doc_hash "$1")
+    extra=$(jq -c --arg h "$h" '{
+      report_fresh: (.doc_hash == $h),
+      panel_ok: ((.panel | length) > 0 and (.panel | all(.status == "ok"))),
+      findings_unprocessed: ([.findings[] | select(((.disposition.type == "user_rejected") or (.disposition.type == "disputed" and .disposition.verdict == "accept")) | not)] | length),
+      build_ok: (if .build_check == null then null else (.build_check.exit == 0) end)}' "$rp") || extra='{"report_fresh":false,"panel_ok":false,"findings_unprocessed":0,"build_ok":null}'
+  fi
+  jq -c --argjson x "$extra" --slurpfile l "$(ga_ledger_path "$1")" '
     . as $s
     | ($l[0].items // [] | map(select(.round == $s.round))) as $cur
     | {phase, mode, paused, round, iteration, iteration_count,
        open: ($cur | map(select(.status == "open")) | length),
-       asked: ($cur | map(select(.status == "asked")) | length)}' "$sd/state.json"
+       asked: ($cur | map(select(.status == "asked")) | length)} + $x' "$sd/state.json"
 }
 
 cmd_status() {

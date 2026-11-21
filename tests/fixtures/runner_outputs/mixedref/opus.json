@@ -1,0 +1,1 @@
+{"type":"result","subtype":"success","is_error":false,"result":"{\"findings\":[{\"check\":1,\"target\":\"ASM-1\",\"claim\":\"URL은 맞고 파일은 틀림\",\"evidence\":[{\"type\":\"url\",\"ref\":\"https://example.com/x\"},{\"type\":\"file\",\"ref\":\"nope.c:1\"}]}]}"}

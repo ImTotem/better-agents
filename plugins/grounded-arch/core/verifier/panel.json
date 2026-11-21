@@ -1,0 +1,1 @@
+{"members":[{"runner":"claude","model":"opus"},{"runner":"claude","model":"sonnet"},{"runner":"claude","model":"fable"}],"timeout_sec":900}

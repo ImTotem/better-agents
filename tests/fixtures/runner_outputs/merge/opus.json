@@ -1,0 +1,1 @@
+{"type":"result","subtype":"success","is_error":false,"result":"ASM-1 검토 결과입니다.\n{\"findings\":[{\"check\":1,\"target\":\"ASM-1\",\"claim\":\"직접 근거가 코드에 있다\",\"evidence\":[{\"type\":\"file\",\"ref\":\"src/main.c:1\"}]}]}"}

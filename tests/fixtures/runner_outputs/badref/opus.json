@@ -1,0 +1,1 @@
+{"type":"result","subtype":"success","is_error":false,"result":"{\"findings\":[{\"check\":1,\"target\":\"ASM-1\",\"claim\":\"없는 줄\",\"evidence\":[{\"type\":\"file\",\"ref\":\"src/main.c:99\"}]}]}"}

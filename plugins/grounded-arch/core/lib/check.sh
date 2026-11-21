@@ -1,5 +1,26 @@
 # grounded-arch ga check. Sourced; bash 3.2 compatible.
 
+# Prints an error message and returns 1 when REF is not an existing "path:line" under ROOT.
+_ga_coderef_error() { # ROOT REF
+  local root=$1 ref=$2 path line total
+  if [ -z "$ref" ] || ! [[ "$ref" =~ ^.+:[0-9]+$ ]]; then
+    echo "코드 출처 ref는 '경로:줄' 형식이어야 합니다: $ref"
+    return 1
+  fi
+  path=${ref%:*}; line=${ref##*:}
+  if [ -f "$root/$path" ]; then
+    total=$(awk 'END{print NR}' "$root/$path")
+    if [ "$line" -lt 1 ] || [ "$line" -gt "$total" ]; then
+      echo "코드 출처의 줄 번호가 파일 범위를 벗어납니다: $ref (파일은 $total줄)"
+      return 1
+    fi
+  else
+    echo "코드 출처의 파일이 없습니다: $path"
+    return 1
+  fi
+  return 0
+}
+
 # Prints {"errors":[...]} for the ledger-shaped JSON in $1 (a file). Arg2: 1 = ledger-level rules.
 _ga_check_run() { # INPUT_FILE LEDGER_FLAG ROOT
   local in=$1 lflag=$2 root=$3 res refs id ref path line total
@@ -9,20 +30,7 @@ _ga_check_run() { # INPUT_FILE LEDGER_FLAG ROOT
   local extra="[]" msg
   while IFS="$(printf '\t')" read -r id ref; do
     [ -n "$id" ] || continue
-    msg=""
-    if [ -z "$ref" ] || ! [[ "$ref" =~ ^.+:[0-9]+$ ]]; then
-      msg="코드 출처 ref는 '경로:줄' 형식이어야 합니다: $ref"
-    else
-      path=${ref%:*}; line=${ref##*:}
-      if [ -f "$root/$path" ]; then
-        total=$(awk 'END{print NR}' "$root/$path")
-        if [ "$line" -lt 1 ] || [ "$line" -gt "$total" ]; then
-          msg="코드 출처의 줄 번호가 파일 범위를 벗어납니다: $ref (파일은 $total줄)"
-        fi
-      else
-        msg="코드 출처의 파일이 없습니다: $path"
-      fi
-    fi
+    msg=$(_ga_coderef_error "$root" "$ref")
     if [ -n "$msg" ]; then
       extra=$(printf '%s' "$extra" | jq -c --arg i "$id" --arg m "$msg" '. + [{id:$i,code:"E_SOURCE_CODE_REF",message:$m}]')
     fi
