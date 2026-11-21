@@ -73,3 +73,7 @@ test_refs_stage_jq_failure_is_not_silent() { r=$(mk_checked); edit "$r" '(.items
   assert_status 2 env PATH="$fk:$PATH" "$CORE/bin/ga" --root "$r" check; }
 test_exit_codes_json() { r=$(mk_checked); assert_status 0 ga --root "$r" check --json
   edit "$r" '(.items[]|select(.id=="Q-1")).impact=""'; assert_status 1 ga --root "$r" check --json; }
+test_e_decision_deviation_status_inconsistent() { r=$(mk_checked)
+  edit "$r" "(.items[]|select(.id==\"DEC-1\")).deviation=true"; expect_code "$r" E_ENUM
+  edit "$r" "(.items[]|select(.id==\"DEC-1\"))|=(.deviation=false|.status=\"open\")"; expect_code "$r" E_ENUM
+  edit "$r" "(.items[]|select(.id==\"DEC-1\"))|=(.deviation=\"true\"|.status=null)"; expect_code "$r" E_ENUM; }

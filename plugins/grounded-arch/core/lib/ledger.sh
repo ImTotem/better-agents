@@ -96,7 +96,7 @@ cmd_update() {
   _ga_need_root
   id=$1
   patch=$(_ga_stdin_object) || exit 3
-  bad=$(printf '%s' "$patch" | jq -r '[keys[] | select(. as $k | ["id","kind","status","resolution","round","phase_added","answer"] | index($k))] | join(", ")')
+  bad=$(printf '%s' "$patch" | jq -r '[keys[] | select(. as $k | ["id","kind","status","resolution","round","phase_added","answer","deviation"] | index($k))] | join(", ")')
   if [ -n "$bad" ]; then
     _ga_viol "다음 필드는 고칠 수 없습니다: $bad (상태와 해결 기록은 ga ask/resolve 또는 사용자 명령으로만 바뀝니다)"
     exit 3

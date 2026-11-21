@@ -32,3 +32,6 @@ test_resolve_by_user_fn() { r=$(in_iter); GA_CORE=$CORE; . "$CORE"/lib/common.sh
   qid=$(echo "$QJ" | ga --root "$r" add question)
   rc=0; ga_ledger_resolve_by_user "$r" "$qid" "클라우드" 2>/dev/null || rc=$?; assert_eq 3 "$rc"
   ga_ledger_resolve_by_user "$r" "$qid" "클라우드" "클라우드"; assert_eq "클라우드" "$(jq -r '.items[1].answer' "$(LJ "$r")")"; }
+test_update_deviation_forbidden() { r=$(in_iter); id=$(jq ".deviation=true" "$FIX/dec.json" | ga --root "$r" add decision); assert_eq open "$(jq -r ".items[0].status" "$(LJ "$r")")"
+  b=$(cat "$(LJ "$r")"); echo "{\"deviation\":false}" | assert_status 3 ga --root "$r" update "$id"; assert_eq "$b" "$(cat "$(LJ "$r")")"; }
+test_add_deviation_non_boolean_exit3() { r=$(in_iter); jq ".deviation=\"true\"" "$FIX/dec.json" | assert_status 3 ga --root "$r" add decision; }

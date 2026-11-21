@@ -72,6 +72,13 @@ def item_errs($id):
             then [err($id; "E_FACT_NOT_CODE"; "현재 구조 사실의 출처는 코드(code)여야 합니다")] else [] end )
       elif .kind == "decision" then
         ( if (.iteration | type) != "number" then [err($id; "E_FIELD_MISSING"; "필수 필드 iteration(숫자)이 없습니다")] else [] end )
+        + ( if has("deviation") and (.deviation | type) != "boolean"
+            then [err($id; "E_ENUM"; "deviation은 true 또는 false(불리언)여야 합니다: \(.deviation | tojson)")] else [] end )
+        + ( if .deviation == true and .status == null
+            then [err($id; "E_ENUM"; "이탈 결정(deviation=true)의 status는 open, asked, resolved 중 하나여야 합니다")]
+            elif .deviation != true and (.status == "open" or .status == "asked")
+            then [err($id; "E_ENUM"; "이탈이 아닌 결정(deviation이 true가 아님)의 status가 \(.status)일 수 없습니다")]
+            else [] end )
         + req_str($id; "element") + req_str($id; "choice")
         + req($id; "drivers")
         + ( if (.rationale | type) != "array" or (.rationale | length) == 0
