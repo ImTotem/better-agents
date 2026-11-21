@@ -13,6 +13,18 @@ test_skill_frontmatter() {
   done
 }
 
+# Explicit invocation only (spec 2, non-goal "명시적으로 호출할 때만 동작").
+test_design_skill_disables_model_invocation() {
+  local fm
+  fm=$(awk 'NR==1{next} /^---$/{exit} {print}' "$PLUGIN/skills/design-architecture/SKILL.md")
+  assert_contains "$fm" "disable-model-invocation: true"
+}
+
+# Compaction keeps only the first 5,000 tokens of a skill: the re-read instruction must sit at the top.
+test_design_skill_reread_instruction_near_top() {
+  assert_contains "$(head -15 "$PLUGIN/skills/design-architecture/SKILL.md")" '${CLAUDE_SKILL_DIR}/SKILL.md'
+}
+
 test_grounding_skill_matches_rule_source() {
   local body
   body=$(awk 'f>=2{print} /^---$/{f++}' "$PLUGIN/skills/grounding/SKILL.md")
