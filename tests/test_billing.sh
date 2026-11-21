@@ -40,4 +40,11 @@ test_billing_record_invoke_forbidden_flag_refused() { use_fake_claude; d=$(mktem
 test_billing_hard_floor_api_key() { use_fake_claude; d=$(mktemp -d); jq '.allowed_auth_methods += ["api_key","none","third_party","api_key_helper"]' "$CORE/verifier/runners/claude.json" >"$d/claude.json"
   for m in api_key api_key_helper third_party none; do FAKE_AUTH_METHOD=$m GA_RUNNERS_DIR=$d assert_status 4 ga billing check claude; done; }
 test_billing_bad_strip_env_name_refused() { use_fake_claude; d=$(mktemp -d); jq '.strip_env += ["a b;x"]' "$CORE/verifier/runners/claude.json" >"$d/claude.json"; GA_RUNNERS_DIR=$d assert_status 4 ga billing check claude; }
+test_billing_subdir_of_root_settings_refused() { use_fake_claude; r=$(mk_project); set_state "$r" '.'; mkdir -p "$r/sub/.claude"; echo '{"env":{"ANTHROPIC_API_KEY":"sk-x"}}' >"$r/sub/.claude/settings.json"
+  export FAKE_ENV_DUMP=$(mktemp -u)
+  ( cd "$r/sub" && assert_status 4 ga billing check claude )
+  ( cd "$r/sub" && _bsrc && GA_ROOT=$r && assert_status 4 ga_runner_exec claude -p hi ); [ ! -e "$FAKE_ENV_DUMP" ] || _fail "command ran"; }
+test_billing_cwd_settings_with_other_root_refused() { use_fake_claude; r=$(mk_project); set_state "$r" '.'; d=$(mktemp -d); mkdir -p "$d/.claude"; echo '{"env":{"CLAUDE_CODE_USE_BEDROCK":"1"}}' >"$d/.claude/settings.local.json"
+  ( cd "$d" && assert_status 4 ga --root "$r" billing check claude ); }
+test_billing_settings_files_relative_terminates() { n=$( ( _bsrc; ga_billing_settings_files foo | head -300 | wc -l ) ); [ "$n" -lt 300 ] || _fail "relative start dir did not terminate"; }
 test_billing_unavailable_command_refused() { use_fake_claude; d=$(mktemp -d); jq '.command="no-such-cli-xyz"' "$CORE/verifier/runners/claude.json" >"$d/claude.json"; GA_RUNNERS_DIR=$d assert_status 4 ga billing check claude; }

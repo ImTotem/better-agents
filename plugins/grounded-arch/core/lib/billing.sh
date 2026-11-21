@@ -18,16 +18,26 @@ ga_billing_settings_files() { # ROOT
     echo "$CLAUDE_CONFIG_DIR/settings.local.json"
   fi
   echo "/Library/Application Support/ClaudeCode/managed-settings.json"
-  d=${1:-$PWD}
-  while :; do
-    if [ "$d" = / ]; then
-      echo "/.claude/settings.json"
-      echo "/.claude/settings.local.json"
-      break
-    fi
-    echo "$d/.claude/settings.json"
-    echo "$d/.claude/settings.local.json"
-    d=$(dirname "$d")
+  # Both chains: canonical $PWD and (when given) ROOT, each with all ancestors; deduplicated.
+  local start seen=$'\n' p
+  for start in "$PWD" "${1:-}"; do
+    [ -n "$start" ] || continue
+    d=$(ga_canon "$start") || d=$start
+    while :; do
+      case "$seen" in
+        *$'\n'"$d"$'\n'*) ;;
+        *)
+          seen="$seen$d"$'\n'
+          p=${d%/}
+          echo "$p/.claude/settings.json"
+          echo "$p/.claude/settings.local.json"
+          ;;
+      esac
+      [ "$d" = / ] && break
+      p=$(dirname "$d")
+      [ "$p" = "$d" ] && break
+      d=$p
+    done
   done
 }
 
@@ -89,7 +99,11 @@ ga_billing_check_rec() { # RUNNER RECFILE
   jq -e '[.forbidden_flags[] as $f | .invoke[] | select(. == $f or startswith($f + "="))] | length == 0' "$rec" >/dev/null 2>&1 \
     || { ga_billing_refuse "실행기 기록의 invoke에 금지된 플래그가 있습니다"; return 4; }
 
-  found=$(ga_billing_settings_scan "${GA_ROOT:-}" "$rec") && :
+  local scanrc=0
+  found=$(ga_billing_settings_scan "${GA_ROOT:-}" "$rec") || scanrc=$?
+  if [ "$scanrc" -ne 0 ] && ! echo "$found" | grep -q '^INVALID:'; then
+    ga_billing_refuse "설정 점검에 실패했습니다"; return 4
+  fi
   if [ -n "$found" ]; then
     case "$found" in
       *INVALID:*) ga_billing_refuse "설정 파일을 JSON 객체로 읽을 수 없습니다: $(echo "$found" | grep '^INVALID:' | head -1 | sed 's/^INVALID://')"; return 4 ;;
