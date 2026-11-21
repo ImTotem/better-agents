@@ -132,7 +132,8 @@ _ga_strip_heredocs() { # TEXT
       continue
     fi
     out=$out$line$nl
-    if [[ $line =~ $re ]]; then
+    # A line with (( is arithmetic (e.g. $((1<<n))), not a heredoc.
+    if [[ $line != *'(('* ]] && [[ $line =~ $re ]]; then
       tag=${BASH_REMATCH[3]}
       if [ -n "${BASH_REMATCH[2]}" ]; then dash=1; else dash=0; fi
     fi
@@ -283,13 +284,13 @@ _ga_gate_bash() {
   segs=$(_ga_split_segments "$body")
 
   local CW CW_IDX SEG_MATCH match="" state_hit="" mention_any=0 cd_seen=0
-  local R_BAD="" R_STATE=0 R_ANYBAD=0 seg_state seg_match_str
+  local R_BAD="" R_STATE=0 R_ANYBAD=0 seg_state skipcmd=0
   local -a words
   while IFS= read -r seg; do
     words=($seg)
     [ ${#words[@]} -gt 0 ] || continue
     _ga_cmdword || continue
-    # Public ga subcommands skip the write-pattern scan (their JSON args may contain '>').
+    skipcmd=0
     if [ "$CW" = ga ]; then
       ga_sub=""
       local k=$((CW_IDX + 1))
@@ -302,13 +303,14 @@ _ga_gate_bash() {
         break
       done
       case "$ga_sub" in
-        add | update | ask | resolve | render | check | status | verify | dispute | init | version | rule | billing | context | gate) continue ;;
+        add | update | ask | resolve | render | check | status | verify | dispute | init | version | rule | billing | context | gate) skipcmd=1 ;;
       esac
     fi
     seg_state=0
     case "$seg" in *.state*) seg_state=1; mention_any=1 ;; esac
     case "$CW" in cd | pushd) cd_seen=1 ;; esac
-    _ga_seg_command_match
+    # R10: public ga segments skip only the command-word patterns; redirects are still scanned.
+    if [ $skipcmd = 1 ]; then SEG_MATCH=""; else _ga_seg_command_match; fi
     if [ -n "$SEG_MATCH" ]; then
       [ -n "$match" ] || match=$SEG_MATCH
       [ $seg_state = 1 ] && [ -z "$state_hit" ] && state_hit=$SEG_MATCH

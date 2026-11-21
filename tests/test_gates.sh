@@ -75,7 +75,12 @@ test_bash_segment_split_denies_second() { r=$(phase inputs); assert_eq deny "$(b
 test_bash_sed_i_denied_sed_n_allowed() { r=$(phase inputs); assert_eq deny "$(bash_dec "$r" "sed -i 's/a/b/' src/a.c")"; assert_eq allow "$(bash_dec "$r" "sed -n '1,3p' src/a.c")"; }
 test_bash_perl_pi_denied() { r=$(phase inputs); assert_eq deny "$(bash_dec "$r" "perl -pi -e 's/a/b/' src/a.c")"; assert_eq allow "$(bash_dec "$r" "perl -Mstrict -e 'print 1'")"; }
 test_bash_path_qualified_rm_denied() { r=$(phase inputs); assert_eq deny "$(bash_dec "$r" '/bin/rm src/a.c')"; assert_eq deny "$(bash_dec "$r" 'FOO=1 rm src/a.c')"; assert_eq deny "$(bash_dec "$r" 'sudo rm src/a.c')"; }
-test_bash_ga_public_path_form_allowed() { r=$(phase inputs); assert_eq allow "$(bash_dec "$r" '/x/core/bin/ga --root . add driver --json "{\"a\":\"b>c\"}"')"; }
+test_bash_ga_public_path_form_allowed() { r=$(phase inputs); assert_eq allow "$(bash_dec "$r" '/x/core/bin/ga --root . add driver --json "{\"a\":\"b c\"}" | cat')"; }
+test_bash_ga_segment_redirect_src_denied_inputs() { r=$(phase inputs); assert_eq deny "$(bash_dec "$r" 'ga status > src/a.c')"; }
+test_bash_ga_segment_devnull_allowed_inputs() { r=$(phase inputs); assert_eq allow "$(bash_dec "$r" 'ga status > /dev/null')"; }
+test_bash_arith_shift_not_heredoc() { r=$(phase inputs); assert_eq deny "$(bash_dec "$r" 'echo $((1<<2))
+echo x > src/a.c')"; assert_eq deny "$(bash_dec "$r" 'echo $((1<<n))
+echo x > src/a.c')"; }
 test_bash_deny_reason_korean() { r=$(phase inputs); out=$(cd "$r" && ga gate bash --command 'rm src/a.c'); assert_contains "$out" "inputs"; assert_contains "$out" "GA 일시정지"; assert_contains "$out" "rm"; }
 test_gate_output_single_json_line_exit0() { r=$(phase inputs); out=$(cd "$r" && ga gate bash --command 'rm x'); assert_eq 1 "$(printf '%s\n' "$out" | wc -l | tr -d ' ')"; assert_status 0 ga gate write --path "$r/src/a.c"; }
 test_stop_no_state_allows() { r=$(mk_project); assert_eq allow "$(cd "$r" && dec "$(ga gate stop)")"; }
