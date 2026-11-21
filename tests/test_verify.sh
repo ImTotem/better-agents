@@ -44,4 +44,19 @@ test_verify_brownfield_skeleton_build_check() { use_fake_claude; r=$(vroot); set
   ga --root "$r" verify >/dev/null; assert_eq 3 "$(rep "$r" '.build_check.exit')"; assert_eq false "$(ga --root "$r" status --json | jq .build_ok)"; }
 test_verify_no_build_check_without_command() { use_fake_claude; r=$(vroot); set_state "$r" '.phase="skeleton"'; ga --root "$r" verify >/dev/null; assert_eq null "$(rep "$r" '.build_check')"; }
 test_verify_no_build_check_outside_skeleton() { use_fake_claude; r=$(vroot); echo 'exit 3' >"$r/docs/architecture/.state/test_command"; ga --root "$r" verify >/dev/null; assert_eq null "$(rep "$r" '.build_check')"; }
+vevid() { # ROOT REF -> verify with one finding whose only evidence is that file ref; prints findings count
+  d=$(mktemp -d); jq -nc --arg r "$2" '{is_error:false,result:({findings:[{check:1,target:"ASM-1",claim:"c",evidence:[{type:"file",ref:$r}]}]}|tojson)}' >"$d/opus.json"
+  export FAKE_P_DIR=$d; echo '{"members":[{"runner":"claude","model":"opus"}],"timeout_sec":5}' >"$1/docs/architecture/.state/panel.json"
+  ga --root "$1" verify >/dev/null; rep "$1" '.findings|length'; }
+test_verify_rejects_outside_root_refs() { use_fake_claude; r=$(vroot); o=$(mktemp -d); echo x >"$o/outside.txt"; ln -s "$o/outside.txt" "$r/src/link.txt"
+  assert_eq 0 "$(vevid "$r" "../$(basename "$o")/outside.txt:1")"
+  assert_eq 0 "$(vevid "$r" "src/../../$(basename "$o")/outside.txt:1")"
+  assert_eq 0 "$(vevid "$r" "src/link.txt:1")"
+  assert_eq 1 "$(vevid "$r" "src/main.c:2")"; }
+test_hash_unmatched_begin_counts_rest() { r=$(vroot); f=$r/docs/architecture/architecture.md; printf '\n<!-- ga:begin ledger -->\n내용\n' >>"$f"
+  . "$CORE/lib/common.sh"; for x in "$CORE"/lib/*.sh; do . "$x"; done
+  h1=$(ga_doc_hash "$r"); echo "뒤에 추가" >>"$f"; h2=$(ga_doc_hash "$r"); [ "$h1" != "$h2" ] || _fail "unmatched begin swallowed text"; }
+test_hash_matched_block_excluded() { r=$(vroot); f=$r/docs/architecture/architecture.md; printf '<!-- ga:begin ledger -->\n내용\n<!-- ga:end ledger -->\n' >>"$f"
+  . "$CORE/lib/common.sh"; for x in "$CORE"/lib/*.sh; do . "$x"; done
+  h1=$(ga_doc_hash "$r"); sed -i.bak 's/^내용$/바뀜/' "$f"; assert_eq "$h1" "$(ga_doc_hash "$r")"; }
 test_verify_default_panel_has_three() { assert_eq '["opus","sonnet","fable"]' "$(jq -c '[.members[].model]' "$CORE/verifier/panel.json")"; }

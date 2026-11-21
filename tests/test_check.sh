@@ -54,6 +54,15 @@ test_item_mode_sets_kind() { r=$(mk_checked)
 test_item_mode_skips_ledger_rules() { r=$(mk_checked)
   j='{"phase_added":"inputs","iteration":1,"element":"e","choice":"c","rationale":[{"type":"user","ref":"대화","quote":"q"}],"alternatives":[{"option":"o","reason":"r"}],"drivers":["DRV-99"]}'
   assert_eq "" "$(item_codes decision "$j" "$r")"; }
+fact_ref_codes() { item_codes fact "$(jq -nc --arg r "$2" '{statement:"s",source:{type:"code",ref:$r}}')" "$1"; }
+test_code_ref_dotdot_outside_rejected() { r=$(mk_checked); o=$(mktemp -d); echo x >"$o/outside.txt"
+  assert_contains "$(fact_ref_codes "$r" "../$(basename "$o")/outside.txt:1")" E_SOURCE_CODE_REF
+  assert_contains "$(fact_ref_codes "$r" "src/../../$(basename "$o")/outside.txt:1")" E_SOURCE_CODE_REF; }
+test_code_ref_dotdot_inside_also_rejected() { r=$(mk_checked); assert_contains "$(fact_ref_codes "$r" "src/../src/main.c:1")" E_SOURCE_CODE_REF; }
+test_code_ref_symlink_outside_rejected() { r=$(mk_checked); o=$(mktemp -d); echo x >"$o/outside.txt"; ln -s "$o/outside.txt" "$r/src/link.txt"; ln -s "$o" "$r/src/linkdir"
+  assert_contains "$(fact_ref_codes "$r" "src/link.txt:1")" E_SOURCE_CODE_REF
+  assert_contains "$(fact_ref_codes "$r" "src/linkdir/outside.txt:1")" E_SOURCE_CODE_REF; }
+test_code_ref_normal_still_ok() { r=$(mk_checked); assert_eq "" "$(fact_ref_codes "$r" "src/main.c:2")"; }
 test_item_mode_code_ref_checked() { r=$(mk_checked)
   assert_contains "$(item_codes fact '{"statement":"s","source":{"type":"code","ref":"src/main.c:99"}}' "$r")" E_SOURCE_CODE_REF
   assert_eq "" "$(item_codes fact '{"statement":"s","source":{"type":"code","ref":"src/main.c:3"}}' "$r")"; }

@@ -8,7 +8,27 @@ _ga_coderef_error() { # ROOT REF
     return 1
   fi
   path=${ref%:*}; line=${ref##*:}
+  case "/$path/" in
+    */../*) echo "코드 출처 경로에 '..'를 쓸 수 없습니다: $ref"; return 1 ;;
+    //*) echo "코드 출처 경로는 루트 기준 상대 경로여야 합니다: $ref"; return 1 ;;
+  esac
   if [ -f "$root/$path" ]; then
+    local rroot rdir
+    rroot=$(cd -P "$root" 2>/dev/null && pwd -P) || rroot=$root
+    rdir=$(cd -P "$(dirname "$root/$path")" 2>/dev/null && pwd -P) || rdir=""
+    local real n=0 lnk
+    real=$rdir/$(basename "$root/$path")
+    while [ -L "$real" ]; do
+      n=$((n + 1)); [ "$n" -gt 20 ] && { echo "코드 출처의 심볼릭 링크가 너무 깊습니다: $ref"; return 1; }
+      lnk=$(readlink "$real")
+      case "$lnk" in /*) ;; *) lnk=$(dirname "$real")/$lnk ;; esac
+      rdir=$(cd -P "$(dirname "$lnk")" 2>/dev/null && pwd -P) || { echo "코드 출처 링크가 깨졌습니다: $ref"; return 1; }
+      real=$rdir/$(basename "$lnk")
+    done
+    case "$real" in
+      "$rroot"/*) ;;
+      *) echo "코드 출처가 프로젝트 루트 밖입니다: $ref"; return 1 ;;
+    esac
     total=$(awk 'END{print NR}' "$root/$path")
     if [ "$line" -lt 1 ] || [ "$line" -gt "$total" ]; then
       echo "코드 출처의 줄 번호가 파일 범위를 벗어납니다: $ref (파일은 $total줄)"

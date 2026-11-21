@@ -12,9 +12,10 @@ ga_doc_hash() { # ROOT
   {
     if [ -f "$arch" ]; then
       awk '
-        match($0, /<!-- ga:begin [^ ]+ -->/) { if (skip == "") { s = substr($0, RSTART, RLENGTH); sub(/^<!-- ga:begin /, "", s); sub(/ -->$/, "", s); skip = s; next } }
-        skip != "" { if (match($0, /<!-- ga:end [^ ]+ -->/)) { e = substr($0, RSTART, RLENGTH); sub(/^<!-- ga:end /, "", e); sub(/ -->$/, "", e); if (e == skip) skip = "" } next }
-        { print }' "$arch"
+        match($0, /<!-- ga:begin [^ ]+ -->/) { if (skip == "") { s = substr($0, RSTART, RLENGTH); sub(/^<!-- ga:begin /, "", s); sub(/ -->$/, "", s); skip = s; buf = $0 "\n"; next } }
+        skip != "" { buf = buf $0 "\n"; if (match($0, /<!-- ga:end [^ ]+ -->/)) { e = substr($0, RSTART, RLENGTH); sub(/^<!-- ga:end /, "", e); sub(/ -->$/, "", e); if (e == skip) { skip = ""; buf = "" } } next }
+        { print }
+        END { if (skip != "") printf "%s", buf }' "$arch"
     fi
     jq -S -c '.items // [] | map(del(.status, .resolution, .answer))' "$lp" 2>/dev/null
   } | shasum -a 256 | awk '{print $1}'
