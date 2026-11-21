@@ -55,6 +55,17 @@ cmd_init() {
     echo "ga: 이미 초기화되어 있습니다: $sd/state.json" >&2
     exit 1
   fi
+  # R29: never at / or $HOME, and never nested inside a design of the same repository.
+  local home anc
+  home=$(cd -P "$HOME" 2>/dev/null && pwd -P) || home=""
+  if [ "$root" = / ] || { [ -n "$home" ] && [ "$root" = "$home" ]; }; then
+    echo "ga: 파일 시스템 루트(/)나 홈 디렉터리($root)에서는 설계를 시작할 수 없습니다. 프로젝트 디렉터리에서 실행하세요" >&2
+    exit 3
+  fi
+  if [ ! -e "$root/.git" ] && anc=$(ga_find_root "$(dirname "$root")"); then
+    echo "ga: 상위 디렉터리 $anc 에 이미 설계가 있습니다. 같은 저장소 안에 설계를 겹쳐 만들 수 없습니다. 그 설계를 이어 가세요" >&2
+    exit 3
+  fi
 
   if [ -n "$mode" ]; then
     reason="--mode 지정"
@@ -92,12 +103,25 @@ _ga_status_json() { # ROOT
       findings_unprocessed: ([.findings[] | select(((.disposition.type == "user_rejected") or (.disposition.type == "disputed" and .disposition.verdict == "accept")) | not)] | length),
       build_ok: (if .build_check == null then null else (.build_check.exit == 0) end)}' "$rp") || extra='{"report_fresh":false,"panel_ok":false,"findings_unprocessed":0,"build_ok":null}'
   fi
-  jq -c --argjson x "$extra" --slurpfile l "$(ga_ledger_path "$1")" '
+  local pm=false
+  ga_paused_marker "$1" && pm=true
+  # open/asked: assumptions and questions of ALL rounds (they block every approval) plus
+  # the other kinds (deviation decisions) of the current round -- the approval rule.
+  jq -c --argjson x "$extra" --argjson pm "$pm" --slurpfile l "$(ga_ledger_path "$1")" '
     . as $s
-    | ($l[0].items // [] | map(select(.round == $s.round))) as $cur
-    | {phase, mode, paused, round, iteration, iteration_count,
+    | ($l[0].items // [] | map(select(.kind == "assumption" or .kind == "question" or .round == $s.round))) as $cur
+    | {phase, mode, paused: ((.paused == true) or $pm), round, iteration, iteration_count,
        open: ($cur | map(select(.status == "open")) | length),
        asked: ($cur | map(select(.status == "asked")) | length)} + $x' "$sd/state.json"
+}
+
+# ga root [--active]: prints the design root found from the current directory (exit 1 if none).
+# --active also exits 1 when the user's PAUSED marker exists. Needs no jq (adapter fail-closed path).
+cmd_root() {
+  [ $# -eq 0 ] || [ "$*" = --active ] || ga_die "사용법: ga root [--active]" 2
+  [ -n "${GA_ROOT:-}" ] && [ -f "$(ga_state_dir "$GA_ROOT")/state.json" ] || exit 1
+  if [ "${1:-}" = --active ] && ga_paused_marker "$GA_ROOT"; then exit 1; fi
+  echo "$GA_ROOT"
 }
 
 cmd_status() {

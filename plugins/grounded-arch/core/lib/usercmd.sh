@@ -27,7 +27,7 @@ _uc_out() { # DECISION REASON CONTEXT
 }
 
 # Files under .state that a command may change.
-_uc_files() { echo "state.json ledger.json report.json approvals.jsonl test_command"; }
+_uc_files() { echo "state.json ledger.json report.json approvals.jsonl test_command PAUSED"; }
 
 _uc_backup() { # ROOT DIR
   local sd f
@@ -236,6 +236,13 @@ _uc_split() { # REST -> sets _UC_A (first word) and _UC_B (trimmed remainder)
 # Applies one command. ROOT VERB REST QUOTE
 _uc_apply() {
   local root=$1 verb=$2 rest=$3 quote=$4 phase kind v ic dv
+  # R31: with an unreadable state.json only the pause commands can run; say how to recover.
+  if [ "$GA_UC_STATE_OK" != 1 ]; then
+    case "$verb" in
+      일시정지 | 재개) ;;
+      *) _uc_fail "docs/architecture/.state/state.json을 읽을 수 없어 이 명령을 적용할 수 없습니다. 'GA 일시정지'로 게이트를 끄거나, state.json을 고치거나 복원한 뒤 다시 입력하세요"; return 1 ;;
+    esac
+  fi
   case "$verb" in
     승인)
       _uc_split "$rest"
@@ -283,14 +290,18 @@ _uc_apply() {
       _uc_sum "기록됨: $_UC_A 반박 판정($_UC_B)"
       ;;
     일시정지)
+      # R31a: the PAUSED marker works even when state.json is unreadable.
       _uc_noargs 일시정지 "$rest" || return 1
-      ga_state_set "$root" '.paused = true' || return 2
+      : >"$(ga_state_dir "$root")/PAUSED" || return 2
+      if [ "$GA_UC_STATE_OK" = 1 ]; then ga_state_set "$root" '.paused = true' || return 2; fi
       _uc_sum "기록됨: 일시정지 (게이트가 모두 통과합니다. 'GA 재개'로 되돌립니다)"
       ;;
     재개)
       _uc_noargs 재개 "$rest" || return 1
-      ga_state_set "$root" '.paused = false' || return 2
+      rm -f "$(ga_state_dir "$root")/PAUSED" || return 2
+      if [ "$GA_UC_STATE_OK" = 1 ]; then ga_state_set "$root" '.paused = false' || return 2; fi
       _uc_sum "기록됨: 재개"
+      [ "$GA_UC_STATE_OK" = 1 ] || _uc_sum "주의: state.json을 읽을 수 없어 게이트가 다시 막습니다. docs/architecture/.state/state.json을 고치거나 복원하세요"
       ;;
     되돌리기)
       _uc_noargs 되돌리기 "$rest" || return 1
@@ -333,7 +344,7 @@ _uc_apply() {
   esac
 }
 
-GA_UC_BDIR=""; GA_UC_ROOT=""; GA_UC_LOCKED=0; GA_UC_RESTORE=0
+GA_UC_BDIR=""; GA_UC_ROOT=""; GA_UC_LOCKED=0; GA_UC_RESTORE=0; GA_UC_STATE_OK=1
 
 # Restores the backup (when GA_UC_RESTORE=1), fully releases the lock, removes the backup dir.
 # Safe to call more than once; used both on exit paths and for the normal finish.
@@ -365,6 +376,15 @@ cmd_user_command() {
   [ -n "$tf" ] && [ -f "$tf" ] || ga_die "ga: --text-file이 필요합니다" 2
   root=${GA_ROOT:-}
 
+  # R24: a verifier runner's own prompt (it can quote build output) is never a user command,
+  # and it must not move the recorded transcript.
+  if [ "${GA_IN_RUNNER:-}" = 1 ]; then _uc_out allow "" ""; return 0; fi
+  # R30: without a design, GA lines are ordinary text.
+  if [ -z "$root" ] || [ ! -f "$(ga_state_dir "$root")/state.json" ]; then
+    _uc_out allow "" ""
+    return 0
+  fi
+
   # Collect command lines (column 0 "GA <verb>").
   while IFS= read -r line || [ -n "$line" ]; do
     line=${line%$'\r'}
@@ -374,16 +394,10 @@ cmd_user_command() {
     fi
   done <"$tf"
 
-  if [ -z "$root" ] || [ ! -f "$(ga_state_dir "$root")/state.json" ]; then
-    if [ "$nl" -gt 0 ]; then
-      _uc_out block "설계가 시작되지 않았습니다. /design-architecture로 시작하세요" ""
-    else
-      _uc_out allow "" ""
-    fi
-    return 0
-  fi
-
-  if [ -n "$tp" ]; then
+  # R31: an unreadable state.json must not swallow the user's GA 일시정지.
+  GA_UC_STATE_OK=1
+  jq -e 'type == "object"' "$(ga_state_dir "$root")/state.json" >/dev/null 2>&1 || GA_UC_STATE_OK=0
+  if [ -n "$tp" ] && [ "$GA_UC_STATE_OK" = 1 ]; then
     ga_state_set "$root" ".transcript_path = $(jq -nc --arg p "$tp" '$p')" || ga_die "ga: transcript_path 기록 실패" 2
   fi
   if [ "$nl" = 0 ]; then _uc_out allow "" ""; return 0; fi

@@ -8,7 +8,7 @@ ready_inputs() { use_fake_claude; r=$(mk_project); ga --root "$r" init >/dev/nul
 
 test_line_must_start_with_GA() { r=$(ready_inputs); assert_eq allow "$(dec "$(uc "$r" '이건 GA 승인 입력 이라는 뜻이 아니다')")"; assert_eq inputs "$(sj "$r" .phase)"; }
 test_no_command_allows_with_empty_context() { r=$(ready_inputs); out=$(uc "$r" '그냥 대화'); assert_eq allow "$(dec "$out")"; assert_eq "" "$(jq -r .context <<<"$out")"; }
-test_no_state_with_command_blocks() { r=$(mk_project); out=$(uc "$r" 'GA 승인 입력'); assert_eq block "$(dec "$out")"; assert_contains "$out" "설계가 시작되지 않았습니다"; }
+test_no_state_with_command_allows() { r=$(mk_project); out=$(uc "$r" 'GA 승인 입력'); assert_eq allow "$(dec "$out")"; assert_eq "" "$(jq -r .context <<<"$out")"; }
 test_no_state_no_command_allows() { r=$(mk_project); assert_eq allow "$(dec "$(uc "$r" '안녕')")"; }
 test_unknown_verb_blocks() { r=$(ready_inputs); out=$(uc "$r" 'GA 아무거나'); assert_eq block "$(dec "$out")"; assert_contains "$out" "승인"; assert_contains "$out" "새라운드"; }
 test_approve_inputs_success() { r=$(ready_inputs); out=$(uc "$r" 'GA 승인 입력'); assert_eq allow "$(dec "$out")"; assert_eq iterating "$(sj "$r" .phase)"
@@ -116,3 +116,30 @@ test_open_deviation_blocks_new_round() { local r out
   out=$(uc "$r" 'GA 새라운드'); assert_eq block "$(dec "$out")"; assert_contains "$out" "DEC-1"; assert_eq 1 "$(sj "$r" .round)"
   assert_eq allow "$(dec "$(uc "$r" 'GA 확인 DEC-1')")"
   assert_eq allow "$(dec "$(uc "$r" 'GA 새라운드')")"; assert_eq 2 "$(sj "$r" .round)"; }
+
+# --- final review fixes ---
+# C1 (R24): inside a verifier runner (GA_IN_RUNNER=1) user-command records nothing.
+test_c1_in_runner_user_command_records_nothing() { local r f out sd
+  r=$(ready_inputs); sd=$r/docs/architecture/.state; f=$(mktemp); printf 'GA 승인 입력\nGA 일시정지' >"$f"
+  out=$(GA_IN_RUNNER=1 ga --root "$r" user-command --text-file "$f" --transcript /nested/t.jsonl)
+  assert_eq allow "$(dec "$out")"; assert_eq "" "$(jq -r .context <<<"$out")"
+  assert_eq "inputs false null" "$(sj "$r" '"\(.phase) \(.paused) \(.transcript_path)"')"
+  assert_eq 0 "$(wc -l <"$sd/approvals.jsonl" | tr -d ' ')"; assert_status 1 test -e "$sd/PAUSED"; }
+# I5 (R30): with no design state, GA lines are ignored entirely.
+test_i5_no_state_ga_line_allowed() { local r out
+  r=$(mk_project); out=$(uc "$r" 'GA release is planned for May'); assert_eq allow "$(dec "$out")"; assert_eq "" "$(jq -r .context <<<"$out")"; }
+# I6 (R31a): GA 일시정지 / GA 재개 manage a PAUSED marker file, also with an unreadable state.json.
+test_i6_pause_resume_marker() { local r sd
+  r=$(ready_inputs); sd=$r/docs/architecture/.state
+  uc "$r" 'GA 일시정지' >/dev/null; assert_status 0 test -f "$sd/PAUSED"; assert_eq true "$(sj "$r" .paused)"
+  uc "$r" 'GA 재개' >/dev/null; assert_status 1 test -e "$sd/PAUSED"; assert_eq false "$(sj "$r" .paused)"; }
+test_i6_pause_with_corrupt_state() { local r sd out
+  r=$(ready_inputs); sd=$r/docs/architecture/.state; echo '{broken' >"$sd/state.json"
+  out=$(uc "$r" 'GA 일시정지'); assert_eq allow "$(dec "$out")"; assert_status 0 test -f "$sd/PAUSED"
+  assert_eq '{broken' "$(cat "$sd/state.json")"
+  assert_eq allow "$(dec "$(ga gate write --path "$r/src/a.c")")"
+  assert_eq allow "$(cd "$r" && dec "$(ga gate bash --command 'rm -rf src')")"
+  out=$(uc "$r" 'GA 재개'); assert_eq allow "$(dec "$out")"; assert_status 1 test -e "$sd/PAUSED"; assert_status 1 test -d "$sd/.lock"; }
+test_i6_corrupt_state_other_commands_explain_recovery() { local r out
+  r=$(ready_inputs); echo '{broken' >"$r/docs/architecture/.state/state.json"
+  out=$(uc "$r" 'GA 승인 입력'); assert_eq block "$(dec "$out")"; assert_contains "$out" "GA 일시정지"; assert_contains "$out" "state.json"; }

@@ -8,6 +8,8 @@ ga_die() { # MSG [CODE]
 ga_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 # Walk up from START to the dir containing docs/architecture/.state/state.json.
+# Never crosses a repository boundary: the walk stops after checking the first directory
+# that contains .git (a directory in a checkout, a file in a worktree or submodule).
 ga_find_root() { # START
   local d
   d=$(cd -P "$1" 2>/dev/null && pwd -P) || return 1
@@ -16,10 +18,14 @@ ga_find_root() { # START
       echo "$d"
       return 0
     fi
+    [ -e "$d/.git" ] && return 1
     [ "$d" = / ] && return 1
     d=$(dirname "$d")
   done
 }
+
+# True when the user's pause marker (GA 일시정지) exists. It works even when state.json is unreadable.
+ga_paused_marker() { [ -e "$1/docs/architecture/.state/PAUSED" ]; } # ROOT
 
 # Canonical absolute path; the file (and its parent dirs) need not exist.
 # The deepest existing ancestor is resolved with cd -P; the rest is appended.
@@ -86,8 +92,14 @@ ga_lock() { # ROOT
   fi
   mkdir -p "$sd" || ga_die "ga: cannot create $sd" 2
   while ! mkdir "$sd/.lock" 2>/dev/null; do
+    # A lock left by a killed ga (older than 120 s) is moved aside atomically, then retried.
+    if [ -n "$(find "$sd/.lock" -maxdepth 0 -mmin +2 2>/dev/null)" ] &&
+       mv "$sd/.lock" "$sd/.lock.stale.$$" 2>/dev/null; then
+      rm -rf "$sd/.lock.stale.$$"
+      continue
+    fi
     i=$((i + 1))
-    [ "$i" -ge 50 ] && ga_die "ga: could not acquire lock $sd/.lock" 2
+    [ "$i" -ge 50 ] && ga_die "ga: 잠금을 얻지 못했습니다: $sd/.lock. 다른 ga 명령이 실행 중이 아니라면 사용자가 이 디렉터리(docs/architecture/.state/.lock)를 지우고 다시 실행하세요 (2분이 지난 잠금은 자동으로 풀립니다)" 2
     sleep 0.1
   done
   GA_LOCK_DEPTH=1

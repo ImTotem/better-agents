@@ -19,6 +19,20 @@ input=$(cat)
 
 jqi() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null; }
 
+# R35-1: without a working jq, or with an event that is not a JSON object, the adapter cannot
+# read the tool call. Writes and shell commands are then denied when a design is active for the
+# session directory (`ga root --active` needs no jq); without a design they pass as before.
+case "$event" in
+  pre-write | pre-bash)
+    if ! printf '%s' "$input" | jq -e 'type == "object"' >/dev/null 2>&1; then
+      if "$GA" root --active >/dev/null 2>&1; then
+        printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"grounded-arch: jq를 실행할 수 없거나 훅 입력을 읽을 수 없어 판정하지 못했으므로 막습니다. 사용자에게 알리세요: jq(/usr/bin/jq)가 동작하도록 고치거나, 사용자가 docs/architecture/.state/PAUSED 파일을 직접 만들면(touch) 게이트가 풀립니다."}}'
+      fi
+      exit 0
+    fi
+    ;;
+esac
+
 cwd=$(jqi '.cwd')
 if [ -n "$cwd" ] && [ -d "$cwd" ]; then cd "$cwd" || true; fi
 
@@ -56,12 +70,13 @@ emit_context() { # EVENTNAME TEXT
 }
 
 ga_error_reason() {
-  printf 'ga 오류: %s. 복구: docs/architecture/.state/state.json을 확인하거나 "paused"를 true로 바꾸세요' "$HOOK_ERR"
+  printf 'ga 오류: %s. 복구: 사용자에게 알리세요. 사용자가 `GA 일시정지`를 입력하거나 docs/architecture/.state/state.json을 확인하고 고치거나 복원하면 풀립니다' "$HOOK_ERR"
 }
 
+# Any verdict other than allow denies (fail-closed for writes and shell commands).
 pre_gate() { # ga args...
   if run_ga "$@"; then
-    [ "$V_DECISION" = deny ] && emit_deny "$V_REASON"
+    [ "$V_DECISION" = allow ] || emit_deny "${V_REASON:-ga 판정이 allow가 아니어서 막습니다 (decision=${V_DECISION})}"
   else
     emit_deny "$(ga_error_reason)"
   fi

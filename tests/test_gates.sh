@@ -41,7 +41,7 @@ test_write_unknown_phase_denies() { r=$(phase inputs); set_state "$r" '.phase="b
 test_write_missing_path_denies() { r=$(phase inputs); assert_eq deny "$(cd "$r" && dec "$(ga gate write)")"; }
 test_bash_no_state_allows() { r=$(mk_project); assert_eq allow "$(bash_dec "$r" 'rm -rf src')"; }
 test_bash_paused_allows() { r=$(phase inputs); set_state "$r" '.paused=true'; assert_eq allow "$(bash_dec "$r" 'rm -rf src')"; }
-test_bash_corrupt_state_denies() { r=$(phase inputs); echo '{bad' >"$r/docs/architecture/.state/state.json"; out=$(cd "$r" && ga gate bash --command 'ls'); assert_eq deny "$(dec "$out")"; assert_contains "$out" "state.json"; }
+test_bash_corrupt_state_denies_writes() { r=$(phase inputs); echo '{bad' >"$r/docs/architecture/.state/state.json"; out=$(cd "$r" && ga gate bash --command 'touch src/x'); assert_eq deny "$(dec "$out")"; assert_contains "$out" "state.json"; }
 test_bash_cp_denied_inputs() { r=$(phase inputs); assert_eq deny "$(bash_dec "$r" 'cp a b')"; }
 test_bash_git_checkout_denied_inputs() { r=$(phase inputs); assert_eq deny "$(bash_dec "$r" 'git checkout -- src/a.c')"; assert_eq deny "$(bash_dec "$r" 'git -C . stash')"; }
 test_bash_git_status_allowed_inputs() { r=$(phase inputs); assert_eq allow "$(bash_dec "$r" 'git status && git log --oneline')"; }
@@ -87,7 +87,7 @@ test_stop_no_state_allows() { r=$(mk_project); assert_eq allow "$(cd "$r" && dec
 test_stop_paused_allows() { r=$(phase iterating); seed_ledger "$r" "$FIX/ledger_bad_asm.json"; set_state "$r" '.paused=true'; assert_eq allow "$(cd "$r" && dec "$(ga gate stop)")"; }
 test_stop_reason_lists_errors_and_hint() { r=$(phase iterating); seed_ledger "$r" "$FIX/ledger_bad_asm.json"; out=$(cd "$r" && ga gate stop --hook-active false); assert_contains "$out" "ASM-1: "; assert_contains "$out" "ga add question"; }
 test_stop_unreadable_ledger_blocks() { r=$(phase inputs); echo 'garbage' >"$r/docs/architecture/.state/ledger.json"; assert_eq block "$(cd "$r" && dec "$(ga gate stop)")"; }
-test_stop_corrupt_state_blocks() { r=$(phase inputs); echo '{bad' >"$r/docs/architecture/.state/state.json"; out=$(cd "$r" && ga gate stop); assert_eq block "$(dec "$out")"; assert_contains "$out" "state.json"; }
+test_stop_corrupt_state_allows() { r=$(phase inputs); echo '{bad' >"$r/docs/architecture/.state/state.json"; out=$(cd "$r" && ga gate stop); assert_eq allow "$(dec "$out")"; }
 # --- fix round 1 regressions (review probes) ---
 bd() { # PHASE EXPECTED CMD   (fresh project in that phase)
   local r; r=$(phase "$1"); assert_eq "$2" "$(bash_dec "$r" "$3")"; }
@@ -149,3 +149,72 @@ test_stop_limits_to_10_errors() {
   n=$(jq -r .reason <<<"$out" | grep -c '^ASM-')
   assert_eq 10 "$n"
 }
+
+# --- final review fixes ---
+# C1 (R24): inside a verifier runner the stop gate never forces the runner to continue.
+test_c1_in_runner_stop_allows() { local r; r=$(phase iterating); seed_ledger "$r" "$FIX/ledger_bad_asm.json"
+  assert_eq allow "$(dec "$(cd "$r" && GA_IN_RUNNER=1 ga gate stop)")"; }
+# I6 (R31): the PAUSED marker opens every gate; a corrupt state.json keeps read-only work possible.
+test_i6_paused_marker_opens_gates() { local r; r=$(phase inputs); seed_ledger "$r" "$FIX/ledger_bad_asm.json"; : >"$r/docs/architecture/.state/PAUSED"
+  assert_eq allow "$(dec "$(ga gate write --path "$r/src/a.c")")"; assert_eq allow "$(bash_dec "$r" 'rm -rf src')"
+  assert_eq allow "$(dec "$(cd "$r" && ga gate stop)")"; }
+test_i6_corrupt_state_bash_read_only_allowed() { local r c out; r=$(phase inputs); echo '{"phase":' >"$r/docs/architecture/.state/state.json"
+  for c in 'ls -la' 'git status' 'cat docs/architecture/.state/state.json' 'git log --oneline | head'; do assert_eq allow "$(bash_dec "$r" "$c")"; done
+  out=$(cd "$r" && ga gate bash --command 'rm src/main.c'); assert_eq deny "$(dec "$out")"; assert_contains "$out" "GA 일시정지"; assert_contains "$out" "state.json"
+  assert_eq deny "$(bash_dec "$r" 'echo x > src/a.c')"; assert_eq deny "$(bash_dec "$r" 'echo {} > docs/architecture/.state/state.json')"; }
+test_i6_corrupt_state_write_denied_with_recovery() { local r out; r=$(phase inputs); echo '{bad' >"$r/docs/architecture/.state/state.json"
+  out=$(ga gate write --path "$r/src/a.c"); assert_eq deny "$(dec "$out")"; assert_contains "$out" "GA 일시정지"; assert_contains "$out" "복원"; }
+# I7 (R32a,b): .state itself or any ancestor is protected in every phase; git clean is denied.
+test_i7_state_ancestor_writes_denied_every_phase() { local p
+  for p in implement skeleton; do
+    bd $p deny 'rm -rf docs/architecture'; bd $p deny 'rm -rf docs'; bd $p deny 'mv docs/architecture docs/old'; bd $p deny 'rm -rf .'
+    bd $p deny 'cp -r /tmp/x docs/architecture'; bd $p deny 'cp /tmp/f.json docs/architecture/.stat?/state.json'
+    bd $p deny 'tee docs/architecture/.st*/state.json < /tmp/f.json'; bd $p deny 'rm -rf docs/*'; bd $p deny 'mkdir docs/architecture/.state/.lock'
+    bd $p allow 'rm -rf build'; bd $p allow 'cp src/a.c src/b.c'; bd $p allow 'mv docs/notes.md docs/old-notes.md'
+  done; }
+test_i7_git_clean_denied_every_phase() { bd implement deny 'git clean -fdx'; bd skeleton deny 'git clean -fd'; bd inputs deny 'git -C . clean -x'; bd implement allow 'git status'
+  bd implement deny 'git stash -u'; bd implement allow 'git stash'; }
+test_i7_git_checkout_restore_state_ancestor_denied() {
+  bd implement deny 'git checkout HEAD~3 -- docs'; bd implement deny 'git restore --source=other docs/architecture'; bd implement deny 'git checkout other -- .'
+  bd implement allow 'git checkout -b feature'; bd implement allow 'git checkout main'; bd implement allow 'git restore src/a.c'; }
+bfs() { # EXPECTED CMD : brownfield skeleton, MAP-1 src/new.c (new)
+  local r; r=$(phase skeleton brownfield); seed_map "$r" src/new.c new; assert_eq "$1" "$(bash_dec "$r" "$2")"; }
+test_i7_brownfield_skeleton_bash_uses_mapping() {
+  bfs deny 'echo hacked > src/main.c'; bfs deny "sed -i '' 's/0/1/' src/main.c"; bfs deny 'cp /tmp/x src/main.c'
+  bfs deny 'mv src/main.c src/old.c'; bfs deny 'tee src/main.c < /dev/null'; bfs deny 'truncate -s 0 src/main.c'; bfs deny 'echo x > $D/a.c'
+  bfs allow 'echo x > src/new.c'; bfs allow 'cp /tmp/x src/new.c'; bfs allow 'echo x >> docs/architecture/notes.md'; bfs allow 'ls > /tmp/out'
+  bfs allow "sed -i '' 's/a/b/' src/new.c"; bfs allow 'truncate -s 0 src/new.c'; bfs allow 'ls src'; bfs allow 'rm -f /tmp/ga-build-*'; bfs deny 'rm -f src/*.o'; }
+# I8 (R33c): internal hook scripts of any adapter are not callable from Bash.
+test_i8_any_adapter_hook_denied() { bd implement deny 'bash /opt/p/adapters/codex/hook.sh pre-bash'; bd inputs deny 'plugins/x/adapters/opencode/hook.sh stop'; }
+# I9 (R34b): GA_* / PATH assignments around a ga invocation are denied.
+test_i9_env_override_around_ga_denied() { local c
+  for c in 'GA_RUNNERS_DIR=/tmp/r ga verify' 'GA_TEST_MODE=1 GA_RUNNERS_DIR=/tmp/r ga verify' 'export GA_TEST_MODE=1; ga verify' \
+           'env GA_ROOT=/x ga status' 'PATH=/tmp/evil:$PATH ga verify' 'export PATH=/tmp/evil:$PATH && ga verify' 'GA_IN_RUNNER=1 /x/bin/ga gate stop'; do
+    bd implement deny "$c"; bd inputs deny "$c"; done
+  bd implement allow 'PATH=./node_modules/.bin:$PATH npm test'; bd inputs allow 'ga verify'; bd inputs allow 'ga --root . status --json'; }
+# I9 (R34d): the plugin itself is write-protected while a design is active.
+test_i9_plugin_root_write_denied() { local r; r=$(phase implement)
+  assert_eq deny "$(cd "$r" && dec "$(ga gate write --path "$PLUGIN/core/lib/gates.sh")")"
+  assert_eq deny "$(bash_dec "$r" "echo x > $PLUGIN/core/verifier/runners/claude.json")"
+  assert_eq deny "$(bash_dec "$r" "cp /tmp/x $PLUGIN/core/verifier/runners/claude.json")"
+  assert_eq deny "$(bash_dec "$r" "sed -i '' s/a/b/ $PLUGIN/core/lib/gates.sh")"
+  set_state "$r" '.paused=true'; assert_eq allow "$(cd "$r" && dec "$(ga gate write --path "$PLUGIN/core/lib/gates.sh")")"; }
+# R35-2: heredoc bodies fed to a shell or interpreter are scanned like command lines.
+test_r35_heredoc_to_shell_scanned() {
+  bd inputs deny "bash <<'EOF'
+rm -rf src
+EOF"
+  bd inputs deny 'sh <<EOF
+echo x > src/a.c
+EOF'
+  bd inputs deny 'cat <<EOF | bash
+rm -rf src
+EOF'
+  bd inputs deny "python3 - <<'EOF'
+import os
+EOF
+python3 x.py > src/a.c"
+  bd inputs allow "cat <<'EOF' > docs/architecture/x.md
+rm -rf src
+EOF"; }
+test_r35_shell_c_and_eval_scanned() { bd inputs deny 'bash -c "rm -rf src"'; bd inputs deny "sh -c 'echo x > src/a.c'"; bd inputs deny "eval 'rm -rf src'"; bd inputs allow 'bash -c "ls -la"'; }
