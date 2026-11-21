@@ -53,6 +53,12 @@ seed_ledger() { # ROOT FIXTURE|-   (test-only: writes ledger.json directly)
   else cp "$2" "$sd/ledger.json"; fi
 }
 
+seed_map() { # ROOT PATH CHANGE   (test-only: appends mapping MAP-1 to the ledger)
+  local sd lp; sd=$(_state_dir "$1"); lp=$sd/ledger.json
+  [ -f "$lp" ] || echo '{"items":[]}' >"$lp"
+  jq --arg p "$2" --arg c "$3" '.items += [{"id":"MAP-1","kind":"mapping","round":1,"phase_added":"skeleton","iteration":null,"status":null,"resolution":null,"element":"테스트 요소","path":$p,"change":$c}]' "$lp" | seed_ledger "$1" -
+}
+
 set_state() { # ROOT JQ_EXPR   (test-only: edits state.json directly)
   local sd f tmp; sd=$(_state_dir "$1"); f=$sd/state.json
   [ -f "$f" ] || echo '{"version":1,"mode":"greenfield","phase":"inputs","paused":false,"round":1,"iteration":0,"iteration_count":0,"transcript_path":null}' >"$f"

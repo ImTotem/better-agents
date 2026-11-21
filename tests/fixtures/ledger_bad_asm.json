@@ -1,0 +1,172 @@
+{
+  "items": [
+    {
+      "id": "DRV-1",
+      "kind": "driver",
+      "round": 1,
+      "phase_added": "inputs",
+      "iteration": null,
+      "status": null,
+      "resolution": null,
+      "driver_type": "purpose",
+      "statement": "소규모 팀이 쓰는 주문 관리 도구를 만든다",
+      "horizon": "current",
+      "priority": "medium",
+      "source": {
+        "type": "user",
+        "ref": "대화",
+        "quote": "주문 관리 도구를 만들고 싶어요"
+      }
+    },
+    {
+      "id": "DRV-2",
+      "kind": "driver",
+      "round": 1,
+      "phase_added": "inputs",
+      "iteration": null,
+      "status": null,
+      "resolution": null,
+      "driver_type": "functional",
+      "statement": "주문을 등록하고 조회할 수 있어야 한다",
+      "horizon": "current",
+      "priority": "medium",
+      "source": {
+        "type": "user",
+        "ref": "대화",
+        "quote": "주문 등록과 조회가 핵심이에요"
+      }
+    },
+    {
+      "id": "DRV-3",
+      "kind": "driver",
+      "round": 1,
+      "phase_added": "inputs",
+      "iteration": 1,
+      "status": null,
+      "resolution": null,
+      "driver_type": "quality",
+      "statement": "주문 조회가 빨라야 한다",
+      "horizon": "current",
+      "priority": "high",
+      "scenario": {
+        "stimulus": "사용자가 주문 목록을 연다",
+        "response": "목록이 표시된다",
+        "measure": "95퍼센트 응답이 200ms 이하"
+      },
+      "source": {
+        "type": "user",
+        "ref": "대화",
+        "quote": "조회는 0.2초 안에 떠야 해요"
+      }
+    },
+    {
+      "id": "CON-1",
+      "kind": "constraint",
+      "round": 1,
+      "phase_added": "inputs",
+      "iteration": null,
+      "status": null,
+      "resolution": null,
+      "statement": "DB는 PostgreSQL을 쓴다",
+      "source": {
+        "type": "user",
+        "ref": "대화",
+        "quote": "DB는 PostgreSQL"
+      }
+    },
+    {
+      "id": "FACT-1",
+      "kind": "fact",
+      "round": 1,
+      "phase_added": "inputs",
+      "iteration": null,
+      "status": null,
+      "resolution": null,
+      "statement": "진입점은 main 함수 하나다",
+      "source": {
+        "type": "code",
+        "ref": "src/main.c:2"
+      }
+    },
+    {
+      "id": "DEC-1",
+      "kind": "decision",
+      "round": 1,
+      "phase_added": "iterating",
+      "iteration": 1,
+      "status": null,
+      "resolution": null,
+      "element": "order-service",
+      "choice": "주문 조회용 읽기 모델을 둔다",
+      "rationale": [
+        {
+          "type": "user",
+          "ref": "대화",
+          "quote": "조회는 0.2초 안에 떠야 해요"
+        }
+      ],
+      "alternatives": [
+        {
+          "option": "매번 원본 테이블 조인",
+          "reason": "200ms 목표를 보장하기 어렵다"
+        }
+      ],
+      "drivers": [
+        "DRV-3"
+      ],
+      "deviation": false
+    },
+    {
+      "id": "ASM-1",
+      "kind": "assumption",
+      "round": 1,
+      "phase_added": "inputs",
+      "iteration": null,
+      "status": "open",
+      "resolution": null,
+      "statement": "동시 사용자는 100명 이하다",
+      "indirect_evidence": [],
+      "search_log": {
+        "code": "해당 없음: 새 프로젝트라 코드에 근거 없음",
+        "docs": "해당 없음: 문서 없음",
+        "conversation": "사용자 수 언급 없음",
+        "web": "해당 없음: 프로젝트 고유 사항"
+      },
+      "alternatives": [
+        {
+          "assumption": "동시 사용자 1000명 이상",
+          "reason": "소규모 팀이라는 목적과 맞지 않는다"
+        }
+      ]
+    },
+    {
+      "id": "Q-1",
+      "kind": "question",
+      "round": 1,
+      "phase_added": "inputs",
+      "iteration": null,
+      "status": "open",
+      "resolution": null,
+      "question": "배포 환경은 클라우드인가 온프레미스인가",
+      "impact": "배포 구조와 DB 선택이 바뀐다",
+      "search_log": {
+        "code": "배포 설정 파일 없음",
+        "docs": "문서 없음",
+        "conversation": "언급 없음",
+        "web": "해당 없음: 프로젝트 고유 질문"
+      }
+    },
+    {
+      "id": "MAP-1",
+      "kind": "mapping",
+      "round": 1,
+      "phase_added": "iterating",
+      "iteration": 1,
+      "status": null,
+      "resolution": null,
+      "element": "order-service",
+      "path": "src/order",
+      "change": "new"
+    }
+  ]
+}

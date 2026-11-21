@@ -33,6 +33,29 @@ ga_canon() { # PATH
     p=$(dirname "$p")
   done
   p=$(cd -P "$p" && pwd -P) || return 1
+  # The non-existent remainder may contain . and .. (e.g. missing/../.state): collapse
+  # them lexically so a path can never hide its real location.
+  case "$rest" in
+    *.*)
+      local c out="" oldifs=$IFS noglob=1
+      case $- in *f*) ;; *) noglob=0; set -f ;; esac
+      IFS=/
+      for c in $rest; do
+        case "$c" in
+          "" | .) ;;
+          ..) if [ -n "$out" ]; then
+                case "$out" in */*) out=${out%/*} ;; *) out="" ;; esac
+              else
+                p=$(dirname "$p")
+              fi ;;
+          *) out=${out:+$out/}$c ;;
+        esac
+      done
+      IFS=$oldifs
+      [ "$noglob" = 0 ] && set +f
+      rest=$out
+      ;;
+  esac
   if [ -z "$rest" ]; then
     echo "$p"
   elif [ "$p" = / ]; then

@@ -1,0 +1,5 @@
+{"items":[
+{"id":"Q-1","kind":"question","round":1,"phase_added":"inputs","iteration":null,"status":"asked","resolution":null,
+ "question":"배포 환경은 클라우드인가 온프레미스인가","impact":"배포 구조와 DB 선택이 바뀐다",
+ "search_log":{"code":"배포 설정 파일 없음","docs":"문서 없음","conversation":"언급 없음","web":"해당 없음: 프로젝트 고유 질문"}}
+]}
