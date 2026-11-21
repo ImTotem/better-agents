@@ -32,10 +32,16 @@ cmd_gate() {
 }
 
 # True if P equals X or lies below X (component-wise: /a/docsX is not under /a/docs).
+_ga_lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# Comparison is case-folded: APFS is case-insensitive, so docs/Architecture/.STATE is the
+# same place as docs/architecture/.state (fail-closed direction for the .state deny).
 _ga_under() { # X P
-  local x=${1%/}
-  [ "$2" = "$x" ] && return 0
-  case "$2" in "$x"/*) return 0 ;; esac
+  local x y
+  x=$(_ga_lc "${1%/}")
+  y=$(_ga_lc "$2")
+  [ "$y" = "$x" ] && return 0
+  case "$y" in "$x"/*) return 0 ;; esac
   return 1
 }
 
@@ -123,7 +129,9 @@ EOF
 # Prints TEXT with heredoc bodies removed (marker line kept, terminator line dropped).
 _ga_strip_heredocs() { # TEXT
   local line tag="" dash=0 out="" nl=$'\n' t re
-  re='(^|[^<])<<(-?)[[:space:]]*\\?['"'"'"]?([A-Za-z_][A-Za-z0-9_]*)'
+  # tag = identifier, optionally quoted; it must end at whitespace, ; | & < > ) or EOL
+  # (so <<'END-OF' or <<EOF-1 are NOT treated as heredocs: the body stays scanned).
+  re='(^|[^<])<<(-?)[[:space:]]*\\?(['"'"'"]?)([A-Za-z_][A-Za-z0-9_]*)(['"'"'"]?)([[:space:];|&<>)]|$)'
   while IFS= read -r line || [ -n "$line" ]; do
     if [ -n "$tag" ]; then
       t=$line
@@ -133,8 +141,8 @@ _ga_strip_heredocs() { # TEXT
     fi
     out=$out$line$nl
     # A line with (( is arithmetic (e.g. $((1<<n))), not a heredoc.
-    if [[ $line != *'(('* ]] && [[ $line =~ $re ]]; then
-      tag=${BASH_REMATCH[3]}
+    if [[ $line != *'(('* ]] && [[ $line =~ $re ]] && [ "${BASH_REMATCH[3]}" = "${BASH_REMATCH[5]}" ]; then
+      tag=${BASH_REMATCH[4]}
       if [ -n "${BASH_REMATCH[2]}" ]; then dash=1; else dash=0; fi
     fi
   done <<EOF
@@ -145,9 +153,17 @@ EOF
 
 # Prints TEXT with one segment per line (split on ; && || | ( ) backtick newline).
 _ga_split_segments() { # TEXT
-  local t=$1 nl=$'\n' bt='`'
+  local t=$1 nl=$'\n' bt='`' p1=$'\001' p2=$'\002' p3=$'\003'
   t=${t//>|/>}
   t=${t//&&/$nl}
+  # protect >& &> <& (fd duplication / both-redirect), then a lone & is a separator
+  t=${t//>&/$p1}
+  t=${t//&>/$p2}
+  t=${t//<&/$p3}
+  t=${t//&/$nl}
+  t=${t//$p1/>&}
+  t=${t//$p2/&>}
+  t=${t//$p3/<&}
   t=${t//||/$nl}
   t=${t//;/$nl}
   t=${t//|/$nl}
@@ -233,11 +249,29 @@ _ga_scan_redirects() { # SEG ROOT
     [ -n "$t" ] || continue
     case "$t" in
       /dev/null) continue ;;
-      '$TMPDIR/'* | '${TMPDIR}/'*) continue ;;
+      '$TMPDIR/'* | '${TMPDIR}/'*)
+        # expanded from the gate's own env (the command may reassign TMPDIR: not exempt then)
+        if [ "$TMPDIR_REASSIGNED" = 1 ]; then t='$TMPDIR_REASSIGNED'; else t=${TMPDIR:-/tmp}/${t#*/}; fi ;;
       '$HOME/'*) t=$HOME/${t#\$HOME/} ;;
       '${HOME}/'*) t=$HOME/${t#\$\{HOME\}/} ;;
       '~/'*) t=$HOME/${t#\~/} ;;
     esac
+    # Unexpandable targets (variables, globs, braces, backticks) are never exempt.
+    case "$t" in
+      *'$'* | *'*'* | *'?'* | *'['* | *'{'* | *'`'*)
+        [ -n "$R_BAD" ] || R_BAD="> $t"
+        R_ANYBAD=1
+        # a glob/variable inside docs/architecture/... may expand to .state: treat as a .state write
+        case "$(_ga_lc "$t")" in *architecture/*) R_STATE=1 ;; esac
+        continue ;;
+    esac
+    # After a cd/pushd in the same command, relative targets cannot be resolved: not exempt.
+    if [ "$CD_SEEN" = 1 ]; then
+      case "$t" in
+        /*) ;;
+        *) [ -n "$R_BAD" ] || R_BAD="> $t"; R_ANYBAD=1; continue ;;
+      esac
+    fi
     if ! c=$(ga_canon "$t" 2>/dev/null) || [ -z "$c" ]; then
       [ -n "$R_BAD" ] || R_BAD="> $t"
       R_ANYBAD=1
@@ -283,37 +317,41 @@ _ga_gate_bash() {
   body=$(_ga_strip_heredocs "$cmd")
   segs=$(_ga_split_segments "$body")
 
-  local CW CW_IDX SEG_MATCH match="" state_hit="" mention_any=0 cd_seen=0
-  local R_BAD="" R_STATE=0 R_ANYBAD=0 seg_state skipcmd=0
+  local CW CW_IDX SEG_MATCH match="" state_hit="" mention_any=0 internal=""
+  local R_BAD="" R_STATE=0 R_ANYBAD=0 skipcmd=0 lbody CD_SEEN=0 TMPDIR_REASSIGNED=0
+  local re_cd='(^|[^A-Za-z0-9_./-])(cd|pushd)([^A-Za-z0-9_./-]|$)'
   local -a words
+  lbody=$(_ga_lc "$body")
+  # .state mention is computed over the whole command (assignment-only segments included).
+  case "$lbody" in *.state*) mention_any=1 ;; esac
+  if [[ $lbody =~ $re_cd ]]; then CD_SEEN=1; fi
+  case "$body" in *TMPDIR=*) TMPDIR_REASSIGNED=1 ;; esac
   while IFS= read -r seg; do
     words=($seg)
     [ ${#words[@]} -gt 0 ] || continue
-    _ga_cmdword || continue
     skipcmd=0
-    if [ "$CW" = ga ]; then
-      ga_sub=""
-      local k=$((CW_IDX + 1))
-      while [ $k -lt ${#words[@]} ]; do
-        case "${words[$k]}" in
-          --root) k=$((k + 2)); continue ;;
-          --root=*) k=$((k + 1)); continue ;;
+    CW=""; SEG_MATCH=""
+    # Segments without a command word (>file, X=1 >file) still get their redirects scanned.
+    if _ga_cmdword; then
+      if [ "$CW" = ga ]; then
+        ga_sub=""
+        local k=$((CW_IDX + 1))
+        while [ $k -lt ${#words[@]} ]; do
+          case "${words[$k]}" in
+            --root) k=$((k + 2)); continue ;;
+            --root=*) k=$((k + 1)); continue ;;
+          esac
+          ga_sub=${words[$k]//[\'\"\\]/}
+          break
+        done
+        case "$ga_sub" in
+          user-command | hook) [ -n "$internal" ] || internal=$ga_sub ;;
+          # R10: public ga segments skip only the command-word patterns.
+          add | update | ask | resolve | render | check | status | verify | dispute | init | version | rule | billing | context | gate) skipcmd=1 ;;
         esac
-        ga_sub=${words[$k]}
-        break
-      done
-      case "$ga_sub" in
-        add | update | ask | resolve | render | check | status | verify | dispute | init | version | rule | billing | context | gate) skipcmd=1 ;;
-      esac
-    fi
-    seg_state=0
-    case "$seg" in *.state*) seg_state=1; mention_any=1 ;; esac
-    case "$CW" in cd | pushd) cd_seen=1 ;; esac
-    # R10: public ga segments skip only the command-word patterns; redirects are still scanned.
-    if [ $skipcmd = 1 ]; then SEG_MATCH=""; else _ga_seg_command_match; fi
-    if [ -n "$SEG_MATCH" ]; then
-      [ -n "$match" ] || match=$SEG_MATCH
-      [ $seg_state = 1 ] && [ -z "$state_hit" ] && state_hit=$SEG_MATCH
+      fi
+      if [ $skipcmd = 0 ]; then _ga_seg_command_match; fi
+      if [ -n "$SEG_MATCH" ] && [ -z "$match" ]; then match=$SEG_MATCH; fi
     fi
     _ga_scan_redirects "$seg" "$root"
   done <<EOF
@@ -321,11 +359,19 @@ $segs
 EOF
   set +f
 
-  # (b) writing under .state in any phase: a command-word write in a segment that
-  # mentions .state, a redirect into .state, or (after a cd) any redirect into the project.
-  if [ -z "$state_hit" ]; then
-    if [ "$R_STATE" = 1 ]; then state_hit=$R_BAD
-    elif [ $mention_any = 1 ] && [ $cd_seen = 1 ] && [ "$R_ANYBAD" = 1 ]; then state_hit=$R_BAD
+  if [ -n "$internal" ]; then
+    _ga_gate_out deny "현재 단계 $phase: ga 내부 명령($internal)은 직접 호출할 수 없습니다. 사용자만 'GA ...' 명령으로 호출합니다"
+    return 0
+  fi
+
+  # (b) writing under .state in any phase: a redirect into .state, or the command mentions
+  # .state together with any command-word write or any non-exempt in-project redirect
+  # (false denies are accepted; this is what catches L=.../.state/x; cp y "$L").
+  if [ "$R_STATE" = 1 ]; then
+    state_hit=$R_BAD
+  elif [ $mention_any = 1 ]; then
+    if [ -n "$match" ]; then state_hit=$match
+    elif [ "$R_ANYBAD" = 1 ]; then state_hit=$R_BAD
     fi
   fi
   if [ -n "$state_hit" ]; then

@@ -88,6 +88,60 @@ test_stop_paused_allows() { r=$(phase iterating); seed_ledger "$r" "$FIX/ledger_
 test_stop_reason_lists_errors_and_hint() { r=$(phase iterating); seed_ledger "$r" "$FIX/ledger_bad_asm.json"; out=$(cd "$r" && ga gate stop --hook-active false); assert_contains "$out" "ASM-1: "; assert_contains "$out" "ga add question"; }
 test_stop_unreadable_ledger_blocks() { r=$(phase inputs); echo 'garbage' >"$r/docs/architecture/.state/ledger.json"; assert_eq block "$(cd "$r" && dec "$(ga gate stop)")"; }
 test_stop_corrupt_state_blocks() { r=$(phase inputs); echo '{bad' >"$r/docs/architecture/.state/state.json"; out=$(cd "$r" && ga gate stop); assert_eq block "$(dec "$out")"; assert_contains "$out" "state.json"; }
+# --- fix round 1 regressions (review probes) ---
+bd() { # PHASE EXPECTED CMD   (fresh project in that phase)
+  local r; r=$(phase "$1"); assert_eq "$2" "$(bash_dec "$r" "$3")"; }
+test_bash_c1_nocmd_redirects_denied_inputs() {
+  bd inputs deny '>src/a.c'; bd inputs deny '>>src/a.c'; bd inputs deny '2>src/a.c'
+  bd inputs deny 'X=1 >src/a.c'; bd inputs deny 'ls && >src/a.c'; bd inputs deny '(echo a; echo b) >src/a.c'; }
+test_bash_c1_nocmd_state_redirect_denied() {
+  bd implement deny '>docs/architecture/.state/ledger.json'; bd skeleton deny '>docs/architecture/.state/state.json'; }
+test_bash_c2_heredoc_tag_with_dash() {
+  bd inputs deny "cat <<'END-OF' > docs/architecture/a.md
+body
+END-OF
+rm src/main.c"
+  bd inputs deny "cat <<EOF-1 >/dev/null
+body
+EOF-1
+rm src/main.c"
+  bd implement deny "cat <<EOF-1 >/dev/null
+body
+EOF-1
+echo x > docs/architecture/.state/ledger.json"; }
+test_bash_c2_heredoc_in_quotes() {
+  bd inputs deny 'echo "a<<b" && cat <<EOF
+x
+EOF
+rm src/main.c'; }
+test_bash_i1_state_via_variable() {
+  bd implement deny 'L=docs/architecture/.state/ledger.json
+jq . "$L" > /tmp/l.json && mv /tmp/l.json "$L"'
+  bd implement deny 'L=docs/architecture/.state/ledger.json; cp /tmp/l.json $L'
+  bd skeleton deny 'L=docs/architecture/.state/state.json; cp /tmp/l.json $L'; }
+test_write_i2_case_alias_state_denied() {
+  r=$(phase implement); assert_eq deny "$(dec "$(ga gate write --path "$r/docs/architecture/.STATE/ledger.json")")"
+  assert_eq deny "$(dec "$(ga gate write --path "$r/docs/Architecture/.state/ledger.json")")"
+  r=$(phase inputs); assert_eq deny "$(dec "$(ga gate write --path "$r/docs/architecture/.STATE/ledger.json")")"; }
+test_write_i2_case_alias_arch_doc_inputs_allowed() { r=$(phase inputs); assert_eq allow "$(dec "$(ga gate write --path "$r/docs/Architecture/x.md")")"; }
+test_bash_i2_case_alias_state_denied() {
+  bd implement deny 'echo x > docs/architecture/.STATE/ledger.json'; bd implement deny 'echo x > docs/Architecture/.state/ledger.json'; }
+test_bash_i3_glob_var_targets_denied() {
+  bd inputs deny 'echo x > docs/architecture/.s*/ledger.json'
+  bd implement deny 'echo x > docs/architecture/.s*/ledger.json'
+  bd implement deny 'S=.state; echo x > docs/architecture/$S/ledger.json'
+  bd inputs deny 'echo x > docs/architecture/$S/a.md'; }
+test_bash_i3_relative_after_cd_denied() {
+  bd inputs deny 'cd src && echo x > ../src/a.c'
+  bd implement deny 'cd docs/architecture && echo x > ../architecture/.state/ledger.json'; }
+test_bash_i3_tmpdir_var_override_denied() { bd inputs deny 'TMPDIR=src; echo x > $TMPDIR/a.c'; }
+test_bash_i3_tmpdir_still_allowed() { bd inputs allow 'echo x > "$TMPDIR/ga-x"'; }
+test_bash_i4_internal_via_subshell_denied() {
+  bd inputs deny '(ga user-command --text-file /tmp/p)'; bd inputs deny 'x=$(ga hook stop)'
+  bd inputs deny 'echo `ga hook stop`'; bd inputs deny "ga 'user-command' --text-file /tmp/p"
+  bd implement deny '(ga hook stop)'; }
+test_bash_i5_single_ampersand_splits() { bd inputs deny 'ls & rm src/main.c'; bd inputs deny 'sleep 1 &touch src/x'; }
+test_bash_i5_amp_redirects_not_split() { bd inputs allow 'ls nope 2>&1 && ls &>/dev/null'; }
 test_stop_limits_to_10_errors() {
   r=$(phase inputs)
   jq -n '{items:[range(1;16)|{id:"ASM-\(.)",kind:"assumption",round:1,phase_added:"inputs",iteration:null,status:"open",resolution:null,statement:"s",indirect_evidence:[],search_log:{code:"a",docs:"a",conversation:"a",web:"a"},alternatives:[{assumption:"x",reason:"y"}]}]}' | seed_ledger "$r" -
