@@ -86,6 +86,15 @@ cmd_check() {
     fi
     cp "$(ga_ledger_path "$GA_ROOT")" "$tmp"
     res=$(_ga_check_run "$tmp" 1 "$GA_ROOT") || { rm -f "$tmp"; ga_die "ga: 검사 실패" 2; }
+    # R28b: unbalanced ga markers in architecture.md (render refuses them; the hash then covers the whole doc).
+    local probs
+    probs=$(ga_marker_problems "$GA_ROOT/docs/architecture/architecture.md")
+    if [ -n "$probs" ]; then
+      res=$(printf '%s\n' "$probs" | jq -R -s -c --argjson r "$res" '
+        . as $in | $r | .errors += ($in | split("\n") | map(select(length > 0))
+          | map({id:"architecture.md", code:"E_MARKERS", message:(. + " (begin/end 표시를 한 쌍씩 순서대로 고치세요)")}))') \
+        || { rm -f "$tmp"; ga_die "ga: 검사 실패" 2; }
+    fi
   fi
   rm -f "$tmp"
   n=$(printf '%s' "$res" | jq '.errors | length')

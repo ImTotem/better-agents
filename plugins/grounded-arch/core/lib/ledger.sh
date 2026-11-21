@@ -78,12 +78,24 @@ cmd_add() {
   echo "$id"
 }
 
+# Sets GA_UPDATE_REOPENED=1 when the change reopened a resolved item (R25): a resolution
+# (by the user or by evidence) was given for the old content, so it no longer counts.
+GA_UPDATE_REOPENED=0
 _ga_update_locked() { # ROOT ID PATCH
-  local root=$1 id=$2 patch=$3 lp item kind new
+  local root=$1 id=$2 patch=$3 lp item old kind new
+  GA_UPDATE_REOPENED=0
   lp=$(ga_ledger_path "$root")
-  item=$(jq -c --arg id "$id" '.items[] | select(.id == $id)' "$lp") || return 2
-  [ -n "$item" ] || { _ga_viol "ga: 항목이 없습니다: $id"; return 3; }
-  item=$(printf '%s' "$item" | jq -c --argjson p "$patch" '. + $p') || return 2
+  old=$(jq -c --arg id "$id" '.items[] | select(.id == $id)' "$lp") || return 2
+  [ -n "$old" ] || { _ga_viol "ga: 항목이 없습니다: $id"; return 3; }
+  item=$(printf '%s' "$old" | jq -c --argjson p "$patch" '. + $p') || return 2
+  [ "$(printf '%s' "$old" | jq -S -c .)" = "$(printf '%s' "$item" | jq -S -c .)" ] && return 0
+  if [ "$(printf '%s' "$item" | jq -r .status)" = resolved ]; then
+    item=$(printf '%s' "$item" | jq -c --arg ts "$(ga_now)" '
+      .resolution_history = ((.resolution_history // [])
+        + [{resolution: .resolution, reopened_ts: $ts} + (if has("answer") then {answer: .answer} else {} end)])
+      | .status = "open" | .resolution = null | del(.answer)') || return 2
+    GA_UPDATE_REOPENED=1
+  fi
   kind=$(printf '%s' "$item" | jq -r .kind)
   _ga_check_item "$root" "$kind" "$item" || return $?
   new=$(jq -c --argjson i "$item" --arg id "$id" '.items |= map(if .id == $id then $i else . end)' "$lp") || return 2
@@ -91,12 +103,12 @@ _ga_update_locked() { # ROOT ID PATCH
 }
 
 cmd_update() {
-  local id patch bad rc
+  local id patch bad rc how
   [ $# -eq 1 ] || ga_die "사용법: ga update ID  (stdin: JSON 객체)" 2
   _ga_need_root
   id=$1
   patch=$(_ga_stdin_object) || exit 3
-  bad=$(printf '%s' "$patch" | jq -r '[keys[] | select(. as $k | ["id","kind","status","resolution","round","phase_added","answer","deviation"] | index($k))] | join(", ")')
+  bad=$(printf '%s' "$patch" | jq -r '[keys[] | select(. as $k | ["id","kind","status","resolution","resolution_history","round","phase_added","answer","deviation"] | index($k))] | join(", ")')
   if [ -n "$bad" ]; then
     _ga_viol "다음 필드는 고칠 수 없습니다: $bad (상태와 해결 기록은 ga ask/resolve 또는 사용자 명령으로만 바뀝니다)"
     exit 3
@@ -105,6 +117,14 @@ cmd_update() {
   _ga_update_locked "$GA_ROOT" "$id" "$patch"
   rc=$?
   ga_unlock "$GA_ROOT"
+  if [ $rc -eq 0 ] && [ "$GA_UPDATE_REOPENED" = 1 ]; then
+    case "$id" in
+      Q-*) how="사용자에게 'GA 답 $id 답변'을 다시 요청하거나, 직접 근거가 있으면 ga resolve로 해결하세요" ;;
+      DEC-*) how="사용자에게 바뀐 이탈 내용을 보여 주고 'GA 확인 $id'를 다시 요청하세요" ;;
+      *) how="사용자에게 'GA 확인 $id'를 다시 요청하거나, 직접 근거가 있으면 ga resolve로 해결하세요" ;;
+    esac
+    echo "ga: ${id}는 해결된 뒤 내용이 바뀌어 다시 open 상태가 되었습니다 (이전 해결 기록은 resolution_history에 남았습니다). $how"
+  fi
   exit $rc
 }
 
@@ -246,13 +266,47 @@ def block:
   end;
 block'
 
+# Prints one line per ga marker problem in FILE ("블록 NAME: ..."); prints nothing when every
+# <!-- ga:begin NAME --> / <!-- ga:end NAME --> pair is complete, unique, in order, not nested,
+# and each marker stands alone on its line. Used by render (refuse), check (E_MARKERS) and the
+# doc hash (whole document when unbalanced), so all three agree on what a block is (R28).
+ga_marker_problems() { # FILE
+  [ -f "$1" ] || return 0
+  awk '
+    function prob(n, m) { print "블록 " n ": " m }
+    {
+      rest = $0; cnt = 0
+      while (match(rest, /<!-- ga:(begin|end) [^ ]+ -->/)) {
+        m = substr(rest, RSTART, RLENGTH); rest = substr(rest, RSTART + RLENGTH); cnt++
+        kind = (m ~ /^<!-- ga:begin /) ? "begin" : "end"
+        n = m; sub(/^<!-- ga:(begin|end) /, "", n); sub(/ -->$/, "", n)
+        if (cnt > 1 || $0 != m) prob(n, NR "번째 줄: 표시는 한 줄에 단독으로 있어야 합니다")
+        if (kind == "begin") {
+          if (n in seenb) prob(n, "begin 표시가 두 번 이상 있습니다")
+          if (open != "") prob(n, "블록 " open " 이 끝나기 전에 시작합니다")
+          seenb[n] = 1; open = n
+        } else {
+          if (n in seene) prob(n, "end 표시가 두 번 이상 있습니다")
+          else if (open != n) prob(n, (n in seenb) ? "end 표시의 순서가 맞지 않습니다" : "begin 표시 없이 end 표시가 있습니다")
+          seene[n] = 1
+          if (open == n) open = ""
+        }
+      }
+    }
+    END { for (n in seenb) if (!(n in seene)) prob(n, "end 표시(<!-- ga:end " n " -->)가 없습니다") }' "$1"
+}
+
 # Replace (or append) the ga:begin/ga:end block NAME in FILE with BODY text; writes via temp file + mv.
+# Callers check ga_marker_problems first; a block with only one of its markers is refused (3).
 _ga_replace_block() { # FILE NAME BODY
-  local f=$1 name=$2 body=$3 tmp bf
+  local f=$1 name=$2 body=$3 tmp bf hb=0 he=0
   tmp=$f.tmp.$$
   bf=$f.body.$$
+  grep -qx "<!-- ga:begin $name -->" "$f" && hb=1
+  grep -qx "<!-- ga:end $name -->" "$f" && he=1
+  [ "$hb" = "$he" ] || return 3
   printf '%s\n' "$body" >"$bf"
-  if grep -qx "<!-- ga:begin $name -->" "$f" && grep -qx "<!-- ga:end $name -->" "$f"; then
+  if [ "$hb" = 1 ]; then
     awk -v b="<!-- ga:begin $name -->" -v e="<!-- ga:end $name -->" -v bf="$bf" '
       $0 == b && !skip { print; while ((getline l < bf) > 0) print l; close(bf); skip = 1; next }
       skip && $0 == e { print; skip = 0; next }
@@ -266,11 +320,17 @@ _ga_replace_block() { # FILE NAME BODY
 }
 
 cmd_render() {
-  local f lp name body rd rc=0
+  local f lp name body rd rc=0 probs
   [ $# -eq 0 ] || ga_die "사용법: ga render" 2
   _ga_need_root
   f=$GA_ROOT/docs/architecture/architecture.md
   [ -f "$f" ] || cp "$GA_CORE/templates/architecture.md" "$f" || ga_die "ga: architecture.md를 만들 수 없습니다" 2
+  probs=$(ga_marker_problems "$f")
+  if [ -n "$probs" ]; then
+    _ga_viol "ga render: architecture.md의 ga 블록 표시가 맞지 않아 아무것도 바꾸지 않았습니다. 블록마다 '<!-- ga:begin 이름 -->'과 '<!-- ga:end 이름 -->'이 한 줄씩, 이 순서로 한 쌍만 있도록 고친 뒤 다시 실행하세요 (두 표시를 모두 지우면 render가 문서 끝에 새 블록을 만듭니다):
+$probs"
+    exit 3
+  fi
   lp=$(ga_ledger_path "$GA_ROOT")
   rd=$(ga_state_get "$GA_ROOT" '.round | numbers') && [ -n "$rd" ] || ga_die "ga: state.json의 round를 읽을 수 없습니다" 2
   ga_lock "$GA_ROOT"

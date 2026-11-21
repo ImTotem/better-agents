@@ -51,3 +51,68 @@ JSON
   ga --root "$r" render
   plan=$(awk '/^<!-- ga:begin plan -->$/{f=1;next} /^<!-- ga:end plan -->$/{f=0} f' "$r/docs/architecture/architecture.md")
   assert_contains "$plan" "DRV-2"; assert_not_contains "$plan" "DRV-1"; }
+
+# --- final review fixes ---
+ucmd() { local f; f=$(mktemp); printf '%s' "$2" >"$f"; ga --root "$1" user-command --text-file "$f"; }
+item() { jq -c --arg i "$2" '.items[] | select(.id == $i)' "$(LJ "$1")"; }
+# C2 (R25): updating a resolved item reopens it, keeps the old resolution in resolution_history.
+test_c2_update_reopens_user_confirmed_assumption() { local r id out it
+  r=$(in_iter); id=$(ga --root "$r" add assumption <"$FIX/asm.json")
+  ucmd "$r" "GA 확인 $id 맞음" >/dev/null; assert_eq resolved "$(item "$r" "$id" | jq -r .status)"
+  out=$(echo '{"statement":"DB는 MongoDB 샤드 클러스터다"}' | ga --root "$r" update "$id" 2>&1)
+  it=$(item "$r" "$id")
+  assert_eq "open null" "$(jq -r '[.status, (.resolution|tostring)] | join(" ")' <<<"$it")"
+  assert_eq 1 "$(jq '.resolution_history | length' <<<"$it")"
+  assert_eq "user GA 확인 $id 맞음" "$(jq -r '.resolution_history[0].resolution | "\(.by) \(.quote)"' <<<"$it")"
+  assert_contains "$out" "$id"; assert_contains "$out" "open"
+  assert_status 0 ga --root "$r" check; }
+test_c2_update_reopens_answered_question() { local r id it
+  r=$(in_iter); id=$(echo "$QJ" | ga --root "$r" add question)
+  ucmd "$r" "GA 답 $id 30일 보관" >/dev/null; assert_eq "30일 보관" "$(item "$r" "$id" | jq -r .answer)"
+  echo '{"question":"모든 데이터를 영구 보관해도 되나요?"}' | ga --root "$r" update "$id" >/dev/null 2>&1
+  it=$(item "$r" "$id")
+  assert_eq "open null false" "$(jq -r '[.status, (.resolution|tostring), has("answer")] | map(tostring) | join(" ")' <<<"$it")"
+  assert_eq "30일 보관 user" "$(jq -r '.resolution_history[0] | "\(.answer) \(.resolution.by)"' <<<"$it")"
+  assert_status 0 ga --root "$r" check; }
+test_c2_update_reopens_confirmed_deviation() { local r id it
+  r=$(in_iter); id=$(jq '.deviation=true' "$FIX/dec.json" | ga --root "$r" add decision)
+  ucmd "$r" "GA 확인 $id" >/dev/null; assert_eq resolved "$(item "$r" "$id" | jq -r .status)"
+  echo '{"choice":"다른 선택"}' | ga --root "$r" update "$id" >/dev/null 2>&1
+  it=$(item "$r" "$id")
+  assert_eq "open null 1" "$(jq -r '[.status, (.resolution|tostring), (.resolution_history|length)] | map(tostring) | join(" ")' <<<"$it")"
+  # (the fixture's DRV-3 is not in this ledger; only the status/resolution shape matters here)
+  assert_eq "" "$(ga --root "$r" check --json | jq -r '.errors[] | select(.code != "E_DECISION_UNKNOWN_DRIVER") | .code')"; }
+test_c2_update_reopens_evidence_resolution() { local r id
+  r=$(in_iter); mkdir -p "$r/src"; printf 'a\nb\n' >"$r/src/x.c"; id=$(ga --root "$r" add assumption <"$FIX/asm.json")
+  ga --root "$r" resolve "$id" --source-type code --ref src/x.c:2
+  echo '{"statement":"바뀐 가정"}' | ga --root "$r" update "$id" >/dev/null 2>&1
+  assert_eq "open evidence" "$(item "$r" "$id" | jq -r '"\(.status) \(.resolution_history[0].resolution.by)"')"; }
+test_c2_update_cannot_patch_history() { local r id
+  r=$(in_iter); id=$(ga --root "$r" add assumption <"$FIX/asm.json")
+  echo '{"resolution_history":[]}' | assert_status 3 ga --root "$r" update "$id"; }
+# I2 (R27b): a literature reference must be a URL, doi: or isbn:.
+test_i2_resolve_literature_free_text_refused() { local r id
+  r=$(in_iter); id=$(ga --root "$r" add assumption <"$FIX/asm.json")
+  assert_status 3 ga --root "$r" resolve "$id" --source-type literature --ref "일반 상식"
+  assert_eq open "$(item "$r" "$id" | jq -r .status)"
+  ga --root "$r" resolve "$id" --source-type literature --ref "doi:10.1145/3368089"; assert_eq resolved "$(item "$r" "$id" | jq -r .status)"; }
+# I3 (R28a): render refuses unbalanced ga markers instead of appending a second block.
+arch() { echo "$1/docs/architecture/architecture.md"; }
+render_refused() { # ROOT BLOCKNAME : render exits 3 naming the block and leaves the file unchanged
+  local f err rc=0; f=$(arch "$1"); cp "$f" "$f.before"
+  err=$(ga --root "$1" render 2>&1 >/dev/null) || rc=$?
+  assert_eq 3 "$rc"; assert_contains "$err" "$2"; cmp -s "$f" "$f.before" || _fail "render changed the file"; }
+test_i3_render_refuses_missing_end_marker() { local r
+  r=$(in_iter); ga --root "$r" render; sed -i.bak '/^<!-- ga:end drivers -->$/d' "$(arch "$r")"; render_refused "$r" drivers; }
+test_i3_render_refuses_missing_begin_marker() { local r
+  r=$(in_iter); ga --root "$r" render; sed -i.bak '/^<!-- ga:begin plan -->$/d' "$(arch "$r")"; render_refused "$r" plan; }
+test_i3_render_refuses_duplicate_marker() { local r
+  r=$(in_iter); ga --root "$r" render; printf '<!-- ga:begin ledger -->\n<!-- ga:end ledger -->\n' >>"$(arch "$r")"; render_refused "$r" ledger; }
+test_i3_render_refuses_out_of_order() { local r f
+  r=$(in_iter); f=$(arch "$r")   # swap: end marker first, then begin
+  sed -i.bak -e 's/^<!-- ga:begin mapping -->$/@@B/' -e 's/^<!-- ga:end mapping -->$/<!-- ga:begin mapping -->/' -e 's/^@@B$/<!-- ga:end mapping -->/' "$f"
+  render_refused "$r" mapping; }
+test_i3_render_appends_when_both_markers_absent() { local r f
+  r=$(in_iter); f=$(arch "$r"); sed -i.bak -e '/^<!-- ga:begin mapping -->$/d' -e '/^<!-- ga:end mapping -->$/d' "$f"
+  ga --root "$r" render
+  assert_eq "1 1" "$(grep -c '^<!-- ga:begin mapping -->$' "$f") $(grep -c '^<!-- ga:end mapping -->$' "$f")"; }

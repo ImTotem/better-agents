@@ -19,6 +19,9 @@ def src_errs($id; $label; $s):
         else [] end )
       + ( if ($s.ref | str_ok | not) then [err($id; "E_FIELD_MISSING"; "\($label): source.ref가 비어 있습니다")] else [] end )
       + ( if $t == "user" and ($s.quote | str_ok | not) then [err($id; "E_SOURCE_USER_NO_QUOTE"; "\($label): 사용자 발언 출처에는 인용(quote)이 필요합니다")] else [] end )
+      + ( if $t == "literature" and ($s.ref | str_ok)
+             and ($s.ref | test("^(https?://|doi:|isbn:)[^[:space:]]+") | not)
+          then [err($id; "E_SOURCE_LITERATURE_REF"; "\($label): 문헌 출처의 ref는 실제로 열어 본 URL(http:// 또는 https://)이나 doi:, isbn: 식별자여야 합니다 (받은 값: \($s.ref))")] else [] end )
   end;
 
 def req($id; $f): if (.[$f] | blank) then [err($id; "E_FIELD_MISSING"; "필수 필드 \($f)가 없거나 비어 있습니다")] else [] end;

@@ -86,3 +86,27 @@ test_e_decision_deviation_status_inconsistent() { r=$(mk_checked)
   edit "$r" "(.items[]|select(.id==\"DEC-1\")).deviation=true"; expect_code "$r" E_ENUM
   edit "$r" "(.items[]|select(.id==\"DEC-1\"))|=(.deviation=false|.status=\"open\")"; expect_code "$r" E_ENUM
   edit "$r" "(.items[]|select(.id==\"DEC-1\"))|=(.deviation=\"true\"|.status=null)"; expect_code "$r" E_ENUM; }
+
+# --- final review fixes ---
+# I2 (R27b): a literature reference must be an http(s) URL, doi: or isbn:.
+lit_codes() { item_codes driver "$(jq -nc --arg r "$2" '{driver_type:"purpose",statement:"s",horizon:"current",priority:"low",source:{type:"literature",ref:$r}}')" "$1"; }
+test_i2_literature_ref_must_be_url() { local r; r=$(mk_checked)
+  assert_contains "$(lit_codes "$r" "일반 상식")" E_SOURCE_LITERATURE_REF
+  assert_contains "$(lit_codes "$r" "www.example.org/x")" E_SOURCE_LITERATURE_REF
+  assert_contains "$(lit_codes "$r" "https://")" E_SOURCE_LITERATURE_REF
+  for ok in https://learn.microsoft.com/x http://example.org/a doi:10.1145/3368089 isbn:9780321815736; do
+    assert_eq "" "$(lit_codes "$r" "$ok")"; done; }
+test_i2_literature_ref_checked_in_resolution() { local r; r=$(mk_checked)
+  edit "$r" '(.items[]|select(.id=="ASM-1"))|=(.status="resolved"|.resolution={"by":"evidence","ts":"x","source":{"type":"literature","ref":"상식"}})'
+  expect_code "$r" E_SOURCE_LITERATURE_REF; }
+# C2 (R25): resolution_history is accepted by the checker.
+test_c2_resolution_history_accepted() { local r; r=$(mk_checked)
+  edit "$r" '(.items[]|select(.id=="ASM-1")).resolution_history=[{"resolution":{"by":"user","ts":"x","quote":"GA 확인 ASM-1"},"reopened_ts":"y"}]'
+  assert_status 0 ga --root "$r" check; }
+# I3 (R28b): ga check reports unbalanced ga markers in architecture.md.
+test_i3_check_reports_e_markers() { local r f; r=$(mk_checked); f=$r/docs/architecture/architecture.md
+  assert_status 0 ga --root "$r" check
+  sed -i.bak '/^<!-- ga:end context -->$/d' "$f"; expect_code "$r" E_MARKERS
+  assert_status 1 ga --root "$r" check; assert_contains "$(ga --root "$r" check)" "context"; }
+test_i3_check_reports_marker_inside_text() { local r f; r=$(mk_checked); f=$r/docs/architecture/architecture.md
+  printf '설명 <!-- ga:begin extra --> 끝\n' >>"$f"; expect_code "$r" E_MARKERS; }
