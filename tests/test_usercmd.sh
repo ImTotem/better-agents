@@ -109,3 +109,10 @@ test_non_integer_iteration_fails_closed() { use_fake_claude; r=$(mk_project); ga
   set_state "$r" '.iteration_count="x"'; out=$(uc "$r" 'GA 승인 반복'); assert_eq block "$(dec "$out")"; assert_eq iterating "$(sj "$r" .phase)"; }
 test_lock_is_reentrant() { r=$(mk_project); ga --root "$r" init >/dev/null
   ( . "$CORE/lib/common.sh"; ga_lock "$r"; ga_lock "$r"; ga_unlock "$r"; [ -d "$r/docs/architecture/.state/.lock" ] || exit 1; ga_unlock "$r"; [ ! -d "$r/docs/architecture/.state/.lock" ] ) || _fail "lock not reentrant"; }
+# R21(b): GA 새라운드 is blocked while a deviation decision awaits the user's GA 확인.
+test_open_deviation_blocks_new_round() { local r out
+  r=$(mk_project); ga --root "$r" init >/dev/null; set_state "$r" '.phase="iterating"|.iteration=1|.iteration_count=1'
+  jq '.deviation=true' "$FIX/dec.json" | ga --root "$r" add decision >/dev/null; set_state "$r" '.phase="implement"'
+  out=$(uc "$r" 'GA 새라운드'); assert_eq block "$(dec "$out")"; assert_contains "$out" "DEC-1"; assert_eq 1 "$(sj "$r" .round)"
+  assert_eq allow "$(dec "$(uc "$r" 'GA 확인 DEC-1')")"
+  assert_eq allow "$(dec "$(uc "$r" 'GA 새라운드')")"; assert_eq 2 "$(sj "$r" .round)"; }

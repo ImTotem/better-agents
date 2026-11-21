@@ -235,7 +235,7 @@ _uc_split() { # REST -> sets _UC_A (first word) and _UC_B (trimmed remainder)
 
 # Applies one command. ROOT VERB REST QUOTE
 _uc_apply() {
-  local root=$1 verb=$2 rest=$3 quote=$4 phase kind v ic
+  local root=$1 verb=$2 rest=$3 quote=$4 phase kind v ic dv
   case "$verb" in
     승인)
       _uc_split "$rest"
@@ -311,7 +311,10 @@ _uc_apply() {
       phase=$(ga_state_get "$root" .phase) || return 2
       [ "$phase" = implement ] || { _uc_fail "새라운드는 implement 단계에서만 쓸 수 있습니다 (현재: ${phase})"; return 1; }
       v=$(_uc_open_aq "$root")
-      if [ -n "$v" ]; then _uc_fail "해결되지 않은 가정/질문이 남아 있어 새 라운드를 시작할 수 없습니다: $v"; return 1; fi
+      if [ -n "$v" ]; then _uc_fail "해결되지 않은 가정/질문이 남아 있어 새 라운드를 시작할 수 없습니다: $v"; fi
+      dv=$(_uc_ids "$root" '[.items[] | select(.kind == "decision" and .deviation == true and (.status == "open" or .status == "asked")) | .id]')
+      if [ -n "$dv" ]; then _uc_fail "사용자가 확인하지 않은 이탈 결정이 남아 있어 새 라운드를 시작할 수 없습니다: $dv (GA 확인 DEC-n)"; fi
+      [ -z "$v$dv" ] || return 1
       ga_state_set "$root" '.phase = "inputs" | .round += 1 | .iteration = 0 | .iteration_count = 0' || return 2
       _uc_sum "기록됨: 새 라운드 $(ga_state_get "$root" .round) / 단계 implement→inputs"
       GA_UC_NEXT="새 라운드의 입력(드라이버, 제약, 가정)을 정리하고 ga verify, 'GA 승인 입력'을 진행하세요."

@@ -35,3 +35,19 @@ test_resolve_by_user_fn() { r=$(in_iter); GA_CORE=$CORE; . "$CORE"/lib/common.sh
 test_update_deviation_forbidden() { r=$(in_iter); id=$(jq ".deviation=true" "$FIX/dec.json" | ga --root "$r" add decision); assert_eq open "$(jq -r ".items[0].status" "$(LJ "$r")")"
   b=$(cat "$(LJ "$r")"); echo "{\"deviation\":false}" | assert_status 3 ga --root "$r" update "$id"; assert_eq "$b" "$(cat "$(LJ "$r")")"; }
 test_add_deviation_non_boolean_exit3() { r=$(in_iter); jq ".deviation=\"true\"" "$FIX/dec.json" | assert_status 3 ga --root "$r" add decision; }
+# R21(a): deviation approval is the user's (GA 확인 DEC-n); ga resolve must not record it.
+test_resolve_deviation_decision_exit3() { local r id b err rc=0
+  r=$(in_iter); id=$(jq '.deviation=true' "$FIX/dec.json" | ga --root "$r" add decision); b=$(cat "$(LJ "$r")")
+  err=$(ga --root "$r" resolve "$id" --source-type literature --ref https://example.org/x 2>&1 >/dev/null) || rc=$?
+  assert_eq 3 "$rc"; assert_contains "$err" "이탈 승인은 사용자의 GA 확인 DEC-n으로만 기록됩니다"; assert_eq "$b" "$(cat "$(LJ "$r")")"; }
+# R21b: the plan block lists only the current round's high drivers.
+test_render_plan_current_round_only() { local r plan
+  r=$(in_iter); set_state "$r" '.round=2'
+  seed_ledger "$r" - <<'JSON'
+{"items":[
+ {"id":"DRV-1","kind":"driver","round":1,"phase_added":"inputs","iteration":1,"status":null,"resolution":null,"driver_type":"quality","statement":"옛 라운드","horizon":"current","priority":"high","scenario":{"stimulus":"s","response":"r","measure":"m"},"source":{"type":"user","ref":"대화","quote":"q"}},
+ {"id":"DRV-2","kind":"driver","round":2,"phase_added":"inputs","iteration":1,"status":null,"resolution":null,"driver_type":"quality","statement":"새 라운드","horizon":"current","priority":"high","scenario":{"stimulus":"s","response":"r","measure":"m"},"source":{"type":"user","ref":"대화","quote":"q"}}]}
+JSON
+  ga --root "$r" render
+  plan=$(awk '/^<!-- ga:begin plan -->$/{f=1;next} /^<!-- ga:end plan -->$/{f=0} f' "$r/docs/architecture/architecture.md")
+  assert_contains "$plan" "DRV-2"; assert_not_contains "$plan" "DRV-1"; }

@@ -141,6 +141,9 @@ _ga_resolve_locked() { # ROOT ID RES ANSWER BY_USER
   item=$(jq -c --arg id "$id" '.items[] | select(.id == $id)' "$lp") || return 2
   [ -n "$item" ] || { _ga_viol "ga: 항목이 없습니다: $id"; return 3; }
   kind=$(printf '%s' "$item" | jq -r .kind)
+  if [ "$kind" = decision ] && [ "$by_user" != 1 ]; then
+    _ga_viol "이탈 승인은 사용자의 GA 확인 DEC-n으로만 기록됩니다: $id"; return 3
+  fi
   if ! printf '%s' "$item" | jq -e '.kind == "assumption" or .kind == "question" or (.kind == "decision" and .deviation == true)' >/dev/null; then
     _ga_viol "해결 처리는 가정, 질문, 이탈 결정에만 쓸 수 있습니다: $id"; return 3
   fi
@@ -221,7 +224,7 @@ def block:
     + "\n\n**현재 구조**\n\n" + table(["ID","내용","출처"]; items("fact") | map([.id, .statement, (.source | src)]))
   elif $blk == "plan" then
     table(["반복","드라이버"];
-      [ items("driver")[] | select(.priority == "high" and .iteration != null) ]
+      [ items("driver")[] | select(.priority == "high" and .iteration != null and .round == $rd) ]
       | group_by(.iteration) | map([.[0].iteration, (map(.id) | join(", "))]))
   elif $blk == "ledger" then
     "**결정**\n\n" + table(["ID","반복","요소","선택","근거","버린 대안","드라이버","이탈"];
@@ -263,15 +266,16 @@ _ga_replace_block() { # FILE NAME BODY
 }
 
 cmd_render() {
-  local f lp name body rc=0
+  local f lp name body rd rc=0
   [ $# -eq 0 ] || ga_die "사용법: ga render" 2
   _ga_need_root
   f=$GA_ROOT/docs/architecture/architecture.md
   [ -f "$f" ] || cp "$GA_CORE/templates/architecture.md" "$f" || ga_die "ga: architecture.md를 만들 수 없습니다" 2
   lp=$(ga_ledger_path "$GA_ROOT")
+  rd=$(ga_state_get "$GA_ROOT" '.round | numbers') && [ -n "$rd" ] || ga_die "ga: state.json의 round를 읽을 수 없습니다" 2
   ga_lock "$GA_ROOT"
   for name in drivers context plan ledger mapping; do
-    body=$(jq -r --arg blk "$name" "$_GA_RENDER_JQ" "$lp") || { rc=2; break; }
+    body=$(jq -r --arg blk "$name" --argjson rd "$rd" "$_GA_RENDER_JQ" "$lp") || { rc=2; break; }
     _ga_replace_block "$f" "$name" "$body" || { rc=2; break; }
   done
   ga_unlock "$GA_ROOT"
