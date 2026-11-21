@@ -1,0 +1,13 @@
+{
+  "name": "ai-tools",
+  "owner": { "name": "sungbin" },
+  "description": "ai-tools 플러그인 마켓플레이스",
+  "plugins": [
+    {
+      "name": "grounded-arch",
+      "source": "./plugins/grounded-arch",
+      "description": "근거 기반 아키텍처 설계 하네스",
+      "version": "0.1.0"
+    }
+  ]
+}
