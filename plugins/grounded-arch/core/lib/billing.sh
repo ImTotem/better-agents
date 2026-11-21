@@ -1,96 +1,94 @@
 # Subscription-only billing preflight and runner execution. Sourced; bash 3.2 + jq.
 # Fail closed: any doubt refuses (exit 4).
+# Harness-neutral (spec 5.0, R33): the core validates the runner record, strips the billing
+# environment, refuses forbidden flags and runs the record's preflight script. Everything that
+# is specific to one CLI (its settings files, its auth status output) lives in that script
+# (core/verifier/runners/<name>.preflight.sh; contract in core/verifier/runners/README.md).
 
 GA_BILLING_DIR=$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
-ga_billing_record() { # RUNNER -> path of record file (may not exist)
-  echo "${GA_RUNNERS_DIR:-$GA_BILLING_DIR/verifier/runners}/$1.json"
-}
-
-# Settings files to inspect: home, CLAUDE_CONFIG_DIR, managed, and project
-# settings in the exec dir (ROOT if non-empty, else $PWD) and every ancestor.
-ga_billing_settings_files() { # ROOT
-  local d
-  echo "$HOME/.claude/settings.json"
-  echo "$HOME/.claude/settings.local.json"
-  if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
-    echo "$CLAUDE_CONFIG_DIR/settings.json"
-    echo "$CLAUDE_CONFIG_DIR/settings.local.json"
+# Runner records live in core/verifier/runners. GA_RUNNERS_DIR is honored only by the test
+# suite (GA_TEST_MODE=1): the agent's environment cannot redirect the records (R34a).
+ga_runners_dir() {
+  if [ "${GA_TEST_MODE:-}" = 1 ] && [ -n "${GA_RUNNERS_DIR:-}" ]; then
+    echo "$GA_RUNNERS_DIR"
+  else
+    echo "$GA_BILLING_DIR/verifier/runners"
   fi
-  echo "/Library/Application Support/ClaudeCode/managed-settings.json"
-  # Both chains: canonical $PWD and (when given) ROOT, each with all ancestors; deduplicated.
-  local start seen=$'\n' p
-  for start in "$PWD" "${1:-}"; do
-    [ -n "$start" ] || continue
-    d=$(ga_canon "$start") || d=$start
-    while :; do
-      case "$seen" in
-        *$'\n'"$d"$'\n'*) ;;
-        *)
-          seen="$seen$d"$'\n'
-          p=${d%/}
-          echo "$p/.claude/settings.json"
-          echo "$p/.claude/settings.local.json"
-          ;;
-      esac
-      [ "$d" = / ] && break
-      p=$(dirname "$d")
-      [ "$p" = "$d" ] && break
-      d=$p
-    done
-  done
 }
 
-# Prints forbidden top-level keys and billing env names found in settings files.
-# Existing file that is not a JSON object (or any jq failure): prints
-# "INVALID:<file>" and returns 1.
-ga_billing_settings_scan() { # ROOT RECORD
-  local root=$1 rec=$2 f forb strip out rc=0
-  forb=$(jq -c '.forbidden_settings' "$rec" 2>/dev/null) || { echo "INVALID:$rec"; return 1; }
-  strip=$(jq -c '.strip_env' "$rec" 2>/dev/null) || { echo "INVALID:$rec"; return 1; }
-  while IFS= read -r f; do
-    [ -e "$f" ] || continue
-    if ! out=$(jq -r --argjson forb "$forb" --argjson strip "$strip" '
-        if type=="object" then
-          (keys[] | select(. as $k | $forb | index($k))),
-          ((.env // {}) | if type=="object" then keys[] | select(. as $k | $strip | index($k)) else error("env not object") end)
-        else error("not object") end' "$f" 2>/dev/null); then
-      echo "INVALID:$f"
-      rc=1
-      continue
-    fi
-    [ -n "$out" ] && echo "$out"
-  done <<EOF
-$(ga_billing_settings_files "$root")
-EOF
-  return $rc
-}
-
-ga_billing_scan_settings() { # ROOT RUNNER
-  local rec v
-  rec=$(ga_billing_record "$2")
-  [ -f "$rec" ] || return 0
-  for v in $(jq -r '.strip_env[]?' "$rec" 2>/dev/null); do
-    [[ "$v" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-    [ -n "${!v:-}" ] && echo "$v"
-  done
-  ga_billing_settings_scan "$1" "$rec" | grep -v '^INVALID:'
-  return 0
+ga_billing_record() { # RUNNER -> path of record file (may not exist)
+  echo "$(ga_runners_dir)/$1.json"
 }
 
 ga_billing_refuse() { echo "ga: 과금 점검 거부: $1" >&2; return 4; }
 
-# Validate a snapshot record and run the preflight. Prints "ok: authMethod=<m>".
+_ga_runner_name_ok() { case "$1" in "" | */* | .*) return 1 ;; esac; return 0; }
+
+# Path of the record's preflight script: a plain file name, looked up next to the records and
+# then in the built-in runners directory. Returns 1 when missing or not a plain name.
+_ga_preflight_path() { # RECFILE
+  local name d
+  name=$(jq -r '.preflight_script | strings' "$1" 2>/dev/null)
+  [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
+  for d in "$(ga_runners_dir)" "$GA_BILLING_DIR/verifier/runners"; do
+    if [ -f "$d/$name" ]; then echo "$d/$name"; return 0; fi
+  done
+  return 1
+}
+
+# Absolute path of the binary COMMAND resolves to from $PWD (what ga_runner_exec runs).
+ga_runner_command_path() { # COMMAND
+  local p
+  [ -n "$1" ] || return 1
+  p=$(command -v "$1" 2>/dev/null) || return 1
+  case "$p" in
+    /*) ;;
+    */*) p=$PWD/${p#./} ;;
+    *) return 1 ;;
+  esac
+  echo "$p"
+}
+
+# Sets GA_STRIP_ARGS=(-u NAME ...) from the record's strip_env. Returns 4 when unusable.
+_ga_strip_args() { # RECFILE
+  local out v
+  GA_STRIP_ARGS=()
+  out=$(jq -r '.strip_env[]' "$1" 2>/dev/null) || { ga_billing_refuse "기록을 읽을 수 없습니다"; return 4; }
+  while IFS= read -r v; do
+    [ -n "$v" ] || continue
+    [[ "$v" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { ga_billing_refuse "올바르지 않은 환경변수 이름: $v"; return 4; }
+    GA_STRIP_ARGS+=(-u "$v")
+  done <<EOF
+$out
+EOF
+  [ "${#GA_STRIP_ARGS[@]}" -gt 0 ] || { ga_billing_refuse "기록에서 strip_env를 읽을 수 없습니다"; return 4; }
+  return 0
+}
+
+# Prints the billing-path names the runner's preflight script finds in the current environment
+# and settings (for the SessionStart warning). Returns 1 when the scan cannot be done.
+ga_billing_scan_settings() { # ROOT RUNNER
+  local rec script
+  _ga_runner_name_ok "$2" || return 1
+  rec=$(ga_billing_record "$2")
+  [ -f "$rec" ] || return 1
+  script=$(_ga_preflight_path "$rec") || return 1
+  GA_RUNNER_RECORD=$rec /bin/bash "$script" --scan "$PWD" "$1" </dev/null 2>/dev/null
+}
+
+# Validate a snapshot record and run its preflight. Prints "ok: authMethod=<m>".
 ga_billing_check_rec() { # RUNNER RECFILE
-  local rec=$2 cmd v found method pre k
-  local -a envargs=() preargs=()
+  local rec=$2 cmd k script out errf rc method
   jq -e 'type=="object"' "$rec" >/dev/null 2>&1 || { ga_billing_refuse "실행기 기록이 올바른 JSON이 아닙니다"; return 4; }
-  for k in name command subscription_auth strip_env forbidden_settings preflight allowed_auth_methods forbidden_flags invoke result_path sources; do
+  for k in name command subscription_auth strip_env preflight_script allowed_auth_methods refused_auth_methods forbidden_flags invoke result_path sources; do
     jq -e --arg k "$k" 'has($k) and .[$k] != null and .[$k] != "" and .[$k] != [] and .[$k] != {}' "$rec" >/dev/null 2>&1 \
       || { ga_billing_refuse "실행기 기록에 필수 키가 없거나 비어 있습니다: $k"; return 4; }
   done
-  jq -e '(.command|type=="string") and (.strip_env|type=="array") and (.forbidden_settings|type=="array") and (.preflight|type=="array") and (.allowed_auth_methods|type=="array") and (.forbidden_flags|type=="array") and (.invoke|type=="array")
-    and (.strip_env|all(type=="string")) and (.forbidden_flags|all(type=="string")) and (.invoke|all(type=="string")) and (.preflight|all(type=="string")) and (.allowed_auth_methods|all(type=="string"))' "$rec" >/dev/null 2>&1 \
+  jq -e '(.command|type=="string") and (.preflight_script|type=="string") and (.strip_env|type=="array") and (.allowed_auth_methods|type=="array")
+    and (.refused_auth_methods|type=="array") and (.forbidden_flags|type=="array") and (.invoke|type=="array")
+    and (.strip_env|all(type=="string")) and (.forbidden_flags|all(type=="string")) and (.invoke|all(type=="string"))
+    and (.allowed_auth_methods|all(type=="string")) and (.refused_auth_methods|all(type=="string"))' "$rec" >/dev/null 2>&1 \
     || { ga_billing_refuse "실행기 기록의 값 형식이 올바르지 않습니다"; return 4; }
   jq -e '.strip_env|all(test("^[A-Za-z_][A-Za-z0-9_]*$"))' "$rec" >/dev/null 2>&1 \
     || { ga_billing_refuse "strip_env에 올바르지 않은 환경변수 이름이 있습니다"; return 4; }
@@ -99,37 +97,33 @@ ga_billing_check_rec() { # RUNNER RECFILE
   jq -e '[.forbidden_flags[] as $f | .invoke[] | select(. == $f or startswith($f + "="))] | length == 0' "$rec" >/dev/null 2>&1 \
     || { ga_billing_refuse "실행기 기록의 invoke에 금지된 플래그가 있습니다"; return 4; }
 
-  local scanrc=0
-  found=$(ga_billing_settings_scan "${GA_ROOT:-}" "$rec") || scanrc=$?
-  if [ "$scanrc" -ne 0 ] && ! echo "$found" | grep -q '^INVALID:'; then
-    ga_billing_refuse "설정 점검에 실패했습니다"; return 4
-  fi
-  if [ -n "$found" ]; then
-    case "$found" in
-      *INVALID:*) ga_billing_refuse "설정 파일을 JSON 객체로 읽을 수 없습니다: $(echo "$found" | grep '^INVALID:' | head -1 | sed 's/^INVALID://')"; return 4 ;;
-    esac
-    ga_billing_refuse "설정에 API 과금 항목이 있습니다: $(echo "$found" | tr '\n' ' ')"
+  cmd=$(jq -r '.command' "$rec") || { ga_billing_refuse "기록을 읽을 수 없습니다"; return 4; }
+  ga_runner_command_path "$cmd" >/dev/null || { ga_billing_refuse "실행기 명령을 찾을 수 없습니다: $cmd"; return 4; }
+  script=$(_ga_preflight_path "$rec") \
+    || { ga_billing_refuse "실행기 기록의 preflight_script가 없거나 이름이 올바르지 않습니다 (runners 디렉터리의 파일 이름이어야 합니다)"; return 4; }
+  _ga_strip_args "$rec" || return 4
+
+  # The runner-specific preflight runs with the billing environment already stripped.
+  errf=$(mktemp "${TMPDIR:-/tmp}/ga-pre.XXXXXX") || { ga_billing_refuse "임시 파일을 만들 수 없습니다"; return 4; }
+  rc=0
+  out=$(env "${GA_STRIP_ARGS[@]}" GA_RUNNER_RECORD="$rec" /bin/bash "$script" "$PWD" "${GA_ROOT:-}" </dev/null 2>"$errf") || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    [ -n "$out" ] || out=$(head -n 1 "$errf")
+    rm -f "$errf"
+    ga_billing_refuse "${out:-실행 전 점검 스크립트가 실패했습니다 (종료 코드 $rc)}"
     return 4
   fi
-
-  cmd=$(jq -r '.command' "$rec") || { ga_billing_refuse "기록을 읽을 수 없습니다"; return 4; }
-  command -v "$cmd" >/dev/null 2>&1 || { ga_billing_refuse "실행기 명령을 찾을 수 없습니다: $cmd"; return 4; }
-  pre=$(jq -r '.strip_env[]' "$rec") || { ga_billing_refuse "기록을 읽을 수 없습니다"; return 4; }
-  while IFS= read -r v; do [ -n "$v" ] && envargs+=(-u "$v"); done <<EOF
-$pre
-EOF
-  pre=$(jq -r '.preflight[]' "$rec") || { ga_billing_refuse "기록을 읽을 수 없습니다"; return 4; }
-  while IFS= read -r v; do preargs+=("$v"); done <<EOF
-$pre
-EOF
-  pre=$(env ${envargs[@]+"${envargs[@]}"} "$cmd" ${preargs[@]+"${preargs[@]}"} </dev/null 2>/dev/null) \
-    || { ga_billing_refuse "로그인 상태 점검 명령이 실패했습니다"; return 4; }
-  method=$(printf '%s' "$pre" | jq -r '.authMethod // empty' 2>/dev/null)
-  [ -n "$method" ] || { ga_billing_refuse "authMethod를 읽을 수 없습니다"; return 4; }
-  case "$method" in
-    api_key | api_key_helper | third_party | none)
-      ga_billing_refuse "API 과금 또는 미로그인 상태입니다 (authMethod=$method)"; return 4 ;;
-  esac
+  rm -f "$errf"
+  local re='^ok: authMethod=([A-Za-z0-9_.:-]+)$'
+  if ! [[ $out =~ $re ]]; then
+    ga_billing_refuse "실행 전 점검 결과를 읽을 수 없습니다: $out"
+    return 4
+  fi
+  method=${BASH_REMATCH[1]}
+  # Generic hard floor from the record (must be non-empty), then the allow list.
+  if jq -e --arg m "$method" '.refused_auth_methods | index($m) != null' "$rec" >/dev/null 2>&1; then
+    ga_billing_refuse "API 과금 또는 미로그인 상태입니다 (authMethod=$method)"; return 4
+  fi
   jq -e --arg m "$method" '.allowed_auth_methods | index($m) != null' "$rec" >/dev/null 2>&1 \
     || { ga_billing_refuse "구독 로그인이 아닙니다 (authMethod=$method). 허용: $(jq -r '.allowed_auth_methods|join(", ")' "$rec")"; return 4; }
   echo "ok: authMethod=$method"
@@ -140,9 +134,7 @@ EOF
 ga_billing_snapshot() { # RUNNER
   local runner=$1 rec
   GA_BILLING_SNAP=""
-  case "$runner" in
-    "" | */* | .*) ga_billing_refuse "실행기 이름이 올바르지 않습니다: $runner"; return 4 ;;
-  esac
+  _ga_runner_name_ok "$runner" || { ga_billing_refuse "실행기 이름이 올바르지 않습니다: $runner"; return 4; }
   command -v jq >/dev/null 2>&1 || { ga_billing_refuse "jq가 없어 점검할 수 없습니다"; return 4; }
   rec=$(ga_billing_record "$runner")
   [ -f "$rec" ] || { ga_billing_refuse "실행기 기록이 없습니다: $rec"; return 4; }
@@ -160,10 +152,12 @@ ga_billing_check() { # RUNNER
   return $rc
 }
 
+# Runs the runner's command (resolved to an absolute path) with the billing environment
+# stripped and GA_IN_RUNNER=1, so the core ignores the runner's own hook events (R24).
 ga_runner_exec() { # RUNNER ARGS...
-  local runner=$1 snap cmd a f v out
+  local runner=$1 snap cmd cpath a f out
   shift
-  local -a envargs=() flags=()
+  local -a flags=()
   ga_billing_snapshot "$runner" || return 4
   snap=$GA_BILLING_SNAP
   ga_billing_check_rec "$runner" "$snap" >/dev/null || { rm -f "$snap"; return 4; }
@@ -172,20 +166,14 @@ ga_runner_exec() { # RUNNER ARGS...
   while IFS= read -r f; do [ -n "$f" ] && flags+=("$f"); done <<EOF
 $out
 EOF
-  out=$(jq -r '.strip_env[]' "$snap") || { rm -f "$snap"; ga_billing_refuse "기록을 읽을 수 없습니다"; return 4; }
-  while IFS= read -r v; do
-    [ -n "$v" ] || continue
-    [[ "$v" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { rm -f "$snap"; ga_billing_refuse "올바르지 않은 환경변수 이름: $v"; return 4; }
-    envargs+=(-u "$v")
-  done <<EOF
-$out
-EOF
+  _ga_strip_args "$snap" || { rm -f "$snap"; return 4; }
   cmd=$(jq -r '.command' "$snap") || { rm -f "$snap"; ga_billing_refuse "기록을 읽을 수 없습니다"; return 4; }
   rm -f "$snap"
-  if [ "${#envargs[@]}" -eq 0 ] || [ "${#flags[@]}" -eq 0 ] || [ -z "$cmd" ]; then
+  if [ "${#GA_STRIP_ARGS[@]}" -eq 0 ] || [ "${#flags[@]}" -eq 0 ] || [ -z "$cmd" ]; then
     ga_billing_refuse "기록에서 strip_env/forbidden_flags/command를 읽을 수 없습니다"
     return 4
   fi
+  cpath=$(ga_runner_command_path "$cmd") || { ga_billing_refuse "실행기 명령을 찾을 수 없습니다: $cmd"; return 4; }
   for a in "$@"; do
     for f in "${flags[@]}"; do
       case "$a" in
@@ -193,7 +181,7 @@ EOF
       esac
     done
   done
-  env "${envargs[@]}" "$cmd" "$@"
+  env "${GA_STRIP_ARGS[@]}" GA_IN_RUNNER=1 "$cpath" "$@"
 }
 
 cmd_billing() {

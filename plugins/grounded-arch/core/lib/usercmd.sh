@@ -208,6 +208,10 @@ _uc_approve() { # ROOT POINT QUOTE
   esac
   _uc_append_approval "$root" "$point" "$phase" "$to" "$round" "$rec_iter" "$quote" || return 2
   _uc_sum "기록됨: 승인($point) / 단계 ${phase}→${to} (반복 $iter/$icount)"
+  # R34c: show the user which binaries produced the report this approval relied on.
+  local runners
+  runners=$(jq -r '[.panel[]? | "\(.runner)/\(.model)=\(.command_path // "?")"] | join(", ")' "$(ga_report_path "$root")" 2>/dev/null)
+  [ -n "$runners" ] && _uc_sum "검증 실행기: $runners"
   GA_UC_NEXT=$next
   return 0
 }

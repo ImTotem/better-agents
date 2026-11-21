@@ -8,6 +8,8 @@ if [ $# -eq 0 ]; then set -- "$REPO"/tests/test_*.sh; fi
 for _l in ko_KR.UTF-8 en_US.UTF-8; do
   if locale -a 2>/dev/null | grep -qix "$_l"; then LC_ALL=$_l; export LC_ALL; break; fi
 done
+# GA_RUNNERS_DIR (fake runner records) is honored only in test mode (R34a).
+GA_TEST_MODE=1; export GA_TEST_MODE
 fails=0
 for f in "$@"; do
   if [ ! -f "$f" ]; then echo "FAIL $f (missing)"; fails=$((fails+1)); continue; fi

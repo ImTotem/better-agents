@@ -143,3 +143,7 @@ test_i6_pause_with_corrupt_state() { local r sd out
 test_i6_corrupt_state_other_commands_explain_recovery() { local r out
   r=$(ready_inputs); echo '{broken' >"$r/docs/architecture/.state/state.json"
   out=$(uc "$r" 'GA 승인 입력'); assert_eq block "$(dec "$out")"; assert_contains "$out" "GA 일시정지"; assert_contains "$out" "state.json"; }
+# I9 (R34c): the approval context names the runner binaries that produced the report.
+test_i9_approval_context_shows_runner_paths() { local r out
+  r=$(ready_inputs); out=$(uc "$r" 'GA 승인 입력'); assert_eq allow "$(dec "$out")"
+  assert_contains "$(jq -r .context <<<"$out")" "$REPO/tests/fakes/claude"; }

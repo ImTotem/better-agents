@@ -1,0 +1,27 @@
+#!/bin/bash
+# Hook-firing fake claude (never talks to a model). Like a real `claude -p` run that still loads
+# installed plugins, it fires the grounded-arch adapter's SessionStart, UserPromptSubmit and Stop
+# hooks in its cwd with its own transcript_path before answering. It deliberately ignores
+# --settings/--strict-mcp-config (worst case: the harness did not disable hooks).
+# FAKE_HOOK_LOG (optional): one line per fired hook with the hook's output.
+here=$(cd -P "$(dirname "$0")" && pwd)
+H=$here/../../plugins/grounded-arch/adapters/claude-code/hook.sh
+if [ "$1" = auth ] && [ "$2" = status ]; then echo '{"authMethod":"claude.ai"}'; exit 0; fi
+prompt=""; model=""; prev=""
+for a in "$@"; do
+  [ "$prev" = -p ] && prompt=$a
+  [ "$prev" = --model ] && model=$a
+  prev=$a
+done
+tp=/nested/verifier-$model.jsonl
+fire() { # EVENT HOOK_EVENT_NAME EXTRA_JSON
+  local ev out
+  ev=$(jq -n --arg c "$PWD" --arg t "$tp" --arg e "$2" --argjson x "$3" \
+    '{session_id:"nested",transcript_path:$t,cwd:$c,hook_event_name:$e} + $x')
+  out=$(printf '%s' "$ev" | "$H" "$1" 2>&1)
+  [ -n "${FAKE_HOOK_LOG:-}" ] && printf '%s %s\n' "$1" "$(printf '%s' "$out" | tr '\n' ' ')" >>"$FAKE_HOOK_LOG"
+}
+fire session-start SessionStart '{"source":"startup"}'
+fire user-prompt UserPromptSubmit "$(jq -n --arg p "$prompt" '{prompt:$p}')"
+fire stop Stop '{"stop_hook_active":false}'
+echo '{"result":"{\"findings\":[]}","is_error":false}'

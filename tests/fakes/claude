@@ -8,6 +8,8 @@ fi
 for a in "$@"; do
   if [ "$a" = -p ]; then
     [ -n "${FAKE_ENV_DUMP:-}" ] && env >"$FAKE_ENV_DUMP"
+    # FAKE_ARGV_DUMP: every argument, NUL-terminated (the prompt spans several lines).
+    [ -n "${FAKE_ARGV_DUMP:-}" ] && printf '%s\0' "$@" >"$FAKE_ARGV_DUMP"
     model=""
     prev=""
     for b in "$@"; do

@@ -4,20 +4,27 @@ GA_VERIFY_DIR=$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 ga_report_path() { echo "$(ga_state_dir "$1")/report.json"; } # ROOT
 
-# sha256 of architecture.md (ga blocks removed) + ledger items without status/resolution/answer.
+# sha256 of architecture.md (ga blocks removed) + ledger items without status/answer and without
+# user resolutions. Evidence resolutions stay in (R27a): an agent's ga resolve after verify makes
+# the report stale, so the panel checks it. When the ga markers are not perfectly balanced the
+# WHOLE document is hashed (R28c): nothing can hide behind an orphan marker.
 ga_doc_hash() { # ROOT
   local root=$1 arch lp
   arch=$root/docs/architecture/architecture.md
   lp=$(ga_ledger_path "$root")
   {
     if [ -f "$arch" ]; then
-      awk '
-        match($0, /<!-- ga:begin [^ ]+ -->/) { if (skip == "") { s = substr($0, RSTART, RLENGTH); sub(/^<!-- ga:begin /, "", s); sub(/ -->$/, "", s); skip = s; buf = $0 "\n"; next } }
-        skip != "" { buf = buf $0 "\n"; if (match($0, /<!-- ga:end [^ ]+ -->/)) { e = substr($0, RSTART, RLENGTH); sub(/^<!-- ga:end /, "", e); sub(/ -->$/, "", e); if (e == skip) { skip = ""; buf = "" } } next }
-        { print }
-        END { if (skip != "") printf "%s", buf }' "$arch"
+      if [ -n "$(ga_marker_problems "$arch")" ]; then
+        cat "$arch"
+      else
+        awk '
+          /^<!-- ga:begin [^ ]+ -->$/ { skip = 1; next }
+          /^<!-- ga:end [^ ]+ -->$/ { skip = 0; next }
+          !skip { print }' "$arch"
+      fi
     fi
-    jq -S -c '.items // [] | map(del(.status, .resolution, .answer))' "$lp" 2>/dev/null
+    jq -S -c '.items // [] | map(del(.status, .answer)
+      | if (.resolution | type) == "object" and .resolution.by == "evidence" then . else del(.resolution) end)' "$lp" 2>/dev/null
   } | shasum -a 256 | awk '{print $1}'
 }
 
@@ -61,7 +68,7 @@ _ga_extract_findings() { # RESULT_STRING
   printf '%s' "$body" | jq -ce '
     (type == "object") and (.findings | type == "array") and (.findings | all(
       type == "object"
-      and (.check | type == "number" and . == floor and . >= 1 and . <= 6)
+      and (.check | type == "number" and . == floor and . >= 1 and . <= 7)
       and (.target | type == "string" and length > 0)
       and (.claim | type == "string" and length > 0)
       and (.evidence | type == "array" and all(
@@ -71,20 +78,25 @@ _ga_extract_findings() { # RESULT_STRING
   printf '%s' "$body"
 }
 
+# External text inlined into the prompt never reaches column 0 (R24): a line starting with
+# "GA " would otherwise be a user command if a harness ever fed the prompt to the hooks.
+_ga_quote_lines() { printf '%s\n' "$1" | sed 's/^/| /'; } # TEXT -> every line prefixed with "| "
+_ga_one_line() { printf '%s' "$1" | tr '\r\n' '  '; }      # TEXT -> newlines flattened
+
 _ga_verify_prompt() { # ROOT BUILD_TEXT
   local root=$1 build=$2 p tr
   p=$(cat "$GA_VERIFY_DIR/verifier/prompt.md") || return 1
   tr=$(ga_state_get "$root" '.transcript_path // empty')
   [ -n "$tr" ] || tr="없음"
-  p=${p//"{{ROOT}}"/"$root"}
-  p=${p//"{{PHASE}}"/"$(ga_state_get "$root" .phase)"}
-  p=${p//"{{MODE}}"/"$(ga_state_get "$root" .mode)"}
-  p=${p//"{{ROUND}}"/"$(ga_state_get "$root" .round)"}
-  p=${p//"{{ITERATION}}"/"$(ga_state_get "$root" .iteration)"}
-  p=${p//"{{ARCH}}"/"$root/docs/architecture/architecture.md"}
-  p=${p//"{{LEDGER}}"/"$(ga_ledger_path "$root")"}
-  p=${p//"{{TRANSCRIPT}}"/"$tr"}
-  p=${p//"{{BUILD}}"/"$build"}
+  p=${p//"{{ROOT}}"/"$(_ga_one_line "$root")"}
+  p=${p//"{{PHASE}}"/"$(_ga_one_line "$(ga_state_get "$root" .phase)")"}
+  p=${p//"{{MODE}}"/"$(_ga_one_line "$(ga_state_get "$root" .mode)")"}
+  p=${p//"{{ROUND}}"/"$(_ga_one_line "$(ga_state_get "$root" .round)")"}
+  p=${p//"{{ITERATION}}"/"$(_ga_one_line "$(ga_state_get "$root" .iteration)")"}
+  p=${p//"{{ARCH}}"/"$(_ga_one_line "$root/docs/architecture/architecture.md")"}
+  p=${p//"{{LEDGER}}"/"$(_ga_one_line "$(ga_ledger_path "$root")")"}
+  p=${p//"{{TRANSCRIPT}}"/"$(_ga_one_line "$tr")"}
+  p=${p//"{{BUILD}}"/"$(_ga_quote_lines "$build")"}
   printf '%s' "$p"
 }
 
@@ -135,7 +147,7 @@ cmd_verify() {
   # 4-5. Run each member.
   mdir=$tmp/members
   mkdir -p "$mdir"
-  local panel_out="[]" all_ok=1 resultpath rc outtxt ext res nfind bad refs ref msg badjson
+  local panel_out="[]" all_ok=1 resultpath rc outtxt ext res nfind bad refs ref msg badjson cpath
   i=0
   while [ "$i" -lt "$n" ]; do
     m=$(printf '%s' "$panel" | jq -c ".members[$i]")
@@ -143,6 +155,8 @@ cmd_verify() {
     model=$(printf '%s' "$m" | jq -r .model)
     rec=$(ga_billing_record "$runner")
     resultpath=$(jq -r '.result_path' "$rec" 2>/dev/null)
+    # R34c: the exact binary this member runs (resolved in the root, like ga_runner_exec does).
+    cpath=$(cd "$root" && ga_runner_command_path "$(jq -r '.command' "$rec" 2>/dev/null)") || cpath=""
     local -a argv=()
     local tok
     while IFS= read -r tok; do
@@ -192,7 +206,8 @@ EOF
       fi
     fi
     [ "$status" = ok ] || all_ok=0
-    panel_out=$(printf '%s' "$panel_out" | jq -c --arg r "$runner" --arg m "$model" --arg s "$status" --argjson k "$kept" --argjson d "$dropped" '. + [{runner:$r, model:$m, status:$s, kept:$k, dropped:$d}]')
+    panel_out=$(printf '%s' "$panel_out" | jq -c --arg r "$runner" --arg m "$model" --arg s "$status" --argjson k "$kept" --argjson d "$dropped" --arg cp "$cpath" \
+      '. + [{runner:$r, model:$m, status:$s, kept:$k, dropped:$d, command_path:$cp}]')
     i=$((i + 1))
   done
 
@@ -215,7 +230,7 @@ EOF
   rm -rf "$tmp"
 
   echo "검증 패널 결과:"
-  printf '%s' "$panel_out" | jq -r '.[] | "  \(.runner)/\(.model): \(.status) (지적 \(.kept)개 유지, \(.dropped)개 버림)"'
+  printf '%s' "$panel_out" | jq -r '.[] | "  \(.runner)/\(.model): \(.status) (지적 \(.kept)개 유지, \(.dropped)개 버림, 실행 파일 \(.command_path))"'
   echo "합친 지적: $(printf '%s' "$findings" | jq 'length')개"
   if [ -n "$build_json" ] && [ "$build_json" != null ]; then
     echo "빌드 확인: exit $(printf '%s' "$build_json" | jq -r .exit)"
