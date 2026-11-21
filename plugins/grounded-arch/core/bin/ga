@@ -16,14 +16,16 @@ EOF
 }
 
 root_arg=""
+GA_ROOT_EXPLICIT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --root)
       [ $# -ge 2 ] || { ga_usage >&2; exit 2; }
       root_arg=$2
+      GA_ROOT_EXPLICIT=1
       shift 2
       ;;
-    --root=*) root_arg=${1#--root=}; shift ;;
+    --root=*) root_arg=${1#--root=}; GA_ROOT_EXPLICIT=1; shift ;;
     *) break ;;
   esac
 done

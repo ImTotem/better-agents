@@ -47,7 +47,8 @@ cmd_init() {
   done
   case "$mode" in ""|greenfield|brownfield) ;; *) ga_die "ga: --mode는 greenfield 또는 brownfield여야 합니다" 2 ;; esac
 
-  root=${GA_ROOT:-}
+  root=""
+  [ -n "${GA_ROOT_EXPLICIT:-}" ] && root=${GA_ROOT:-}
   [ -n "$root" ] || root=$(ga_canon "$PWD") || exit 2
   sd=$(ga_state_dir "$root")
   if [ -f "$sd/state.json" ]; then
