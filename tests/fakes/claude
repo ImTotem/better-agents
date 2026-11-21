@@ -1,0 +1,25 @@
+#!/bin/bash
+# Fake claude CLI for tests. Never talks to a model.
+if [ "$1" = auth ] && [ "$2" = status ]; then
+  [ "${FAKE_AUTH_FAIL:-}" = 1 ] && exit 1
+  printf '{"authMethod":"%s"}\n' "${FAKE_AUTH_METHOD:-claude.ai}"
+  exit 0
+fi
+for a in "$@"; do
+  if [ "$a" = -p ]; then
+    [ -n "${FAKE_ENV_DUMP:-}" ] && env >"$FAKE_ENV_DUMP"
+    model=""
+    prev=""
+    for b in "$@"; do
+      [ "$prev" = --model ] && model=$b
+      prev=$b
+    done
+    if [ -n "${FAKE_P_DIR:-}" ] && [ -n "$model" ] && [ -f "$FAKE_P_DIR/$model.json" ]; then
+      cat "$FAKE_P_DIR/$model.json"
+    else
+      echo '{"result":"{\"findings\":[]}","is_error":false}'
+    fi
+    exit 0
+  fi
+done
+exit 0
