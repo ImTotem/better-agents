@@ -1,0 +1,4 @@
+{"statement":"동시 사용자는 100명 이하다",
+ "indirect_evidence":[{"type":"goal_inference","ref":"소규모 팀이라는 목적"}],
+ "search_log":{"code":"해당 없음: 새 프로젝트라 코드에 근거 없음","docs":"해당 없음: 문서 없음","conversation":"사용자 수 언급 없음","web":"해당 없음: 프로젝트 고유 사항"},
+ "alternatives":[{"assumption":"동시 사용자 1000명 이상","reason":"소규모 팀이라는 목적과 맞지 않는다"}]}

@@ -1,0 +1,4 @@
+{"element":"order-service","choice":"주문 조회용 읽기 모델을 둔다",
+ "rationale":[{"type":"user","ref":"대화","quote":"조회는 0.2초 안에 떠야 해요"}],
+ "alternatives":[{"option":"매번 원본 테이블 조인","reason":"200ms 목표를 보장하기 어렵다"}],
+ "drivers":["DRV-3"]}
