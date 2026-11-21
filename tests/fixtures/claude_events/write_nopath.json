@@ -1,0 +1,11 @@
+{
+  "session_id": "sess-1",
+  "transcript_path": "/tmp/transcript.jsonl",
+  "cwd": "__ROOT__",
+  "hook_event_name": "PreToolUse",
+  "permission_mode": "default",
+  "tool_name": "Write",
+  "tool_input": {
+    "content": "x"
+  }
+}

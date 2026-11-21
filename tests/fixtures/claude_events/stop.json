@@ -1,0 +1,8 @@
+{
+  "session_id": "sess-1",
+  "transcript_path": "/tmp/transcript.jsonl",
+  "cwd": "__ROOT__",
+  "hook_event_name": "Stop",
+  "permission_mode": "default",
+  "stop_hook_active": false
+}

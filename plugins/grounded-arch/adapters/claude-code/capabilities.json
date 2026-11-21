@@ -1,0 +1,2 @@
+{"harness":"claude-code","write_block":true,"user_prompt_capture":true,"stop_check":true,"context_inject":true,
+ "notes":"Bash 경유 쓰기는 최선 노력으로만 막는다. Stop 훅은 연속 8회 차단 후 해제된다."}

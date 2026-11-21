@@ -1,0 +1,10 @@
+#!/bin/bash
+# PATH wrapper: resolves its own real location (through symlinks), then runs core/bin/ga.
+_self=${BASH_SOURCE[0]}
+while [ -L "$_self" ]; do
+  _dir=$(cd -P "$(dirname "$_self")" && pwd)
+  _self=$(readlink "$_self")
+  case "$_self" in /*) ;; *) _self=$_dir/$_self ;; esac
+done
+_here=$(cd -P "$(dirname "$_self")" && pwd)
+exec "$_here/../core/bin/ga" "$@"
