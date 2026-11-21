@@ -1,0 +1,78 @@
+{
+  "items": [
+    {
+      "id": "DRV-1",
+      "kind": "driver",
+      "round": 1,
+      "phase_added": "inputs",
+      "iteration": null,
+      "status": null,
+      "resolution": null,
+      "driver_type": "purpose",
+      "statement": "소규모 팀이 쓰는 주문 관리 도구를 만든다",
+      "horizon": "current",
+      "priority": "medium",
+      "source": {
+        "type": "user",
+        "ref": "대화",
+        "quote": "주문 관리 도구를 만들고 싶어요"
+      }
+    },
+    {
+      "id": "DRV-2",
+      "kind": "driver",
+      "round": 1,
+      "phase_added": "inputs",
+      "iteration": null,
+      "status": null,
+      "resolution": null,
+      "driver_type": "functional",
+      "statement": "주문을 등록하고 조회할 수 있어야 한다",
+      "horizon": "current",
+      "priority": "medium",
+      "source": {
+        "type": "user",
+        "ref": "대화",
+        "quote": "주문 등록과 조회가 핵심이에요"
+      }
+    },
+    {
+      "id": "DRV-3",
+      "kind": "driver",
+      "round": 1,
+      "phase_added": "inputs",
+      "iteration": 1,
+      "status": null,
+      "resolution": null,
+      "driver_type": "quality",
+      "statement": "주문 조회가 빨라야 한다",
+      "horizon": "current",
+      "priority": "high",
+      "scenario": {
+        "stimulus": "사용자가 주문 목록을 연다",
+        "response": "목록이 표시된다",
+        "measure": "95퍼센트 응답이 200ms 이하"
+      },
+      "source": {
+        "type": "user",
+        "ref": "대화",
+        "quote": "조회는 0.2초 안에 떠야 해요"
+      }
+    },
+    {
+      "id": "CON-1",
+      "kind": "constraint",
+      "round": 1,
+      "phase_added": "inputs",
+      "iteration": null,
+      "status": null,
+      "resolution": null,
+      "statement": "DB는 PostgreSQL을 쓴다",
+      "source": {
+        "type": "user",
+        "ref": "대화",
+        "quote": "DB는 PostgreSQL"
+      }
+    }
+  ]
+}

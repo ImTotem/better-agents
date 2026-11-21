@@ -75,17 +75,30 @@ ga_write_json() { # FILE
   mv "$tmp" "$f"
 }
 
+# Reentrant within one process: only the outermost ga_lock creates the lock dir and only the
+# matching outermost ga_unlock removes it (GA_LOCK_DEPTH is deliberately not exported).
+GA_LOCK_DEPTH=0
 ga_lock() { # ROOT
   local sd=$1/docs/architecture/.state i=0
+  if [ "${GA_LOCK_DEPTH:-0}" -gt 0 ]; then
+    GA_LOCK_DEPTH=$((GA_LOCK_DEPTH + 1))
+    return 0
+  fi
   mkdir -p "$sd" || ga_die "ga: cannot create $sd" 2
   while ! mkdir "$sd/.lock" 2>/dev/null; do
     i=$((i + 1))
     [ "$i" -ge 50 ] && ga_die "ga: could not acquire lock $sd/.lock" 2
     sleep 0.1
   done
+  GA_LOCK_DEPTH=1
 }
 
 ga_unlock() { # ROOT
+  if [ "${GA_LOCK_DEPTH:-0}" -gt 1 ]; then
+    GA_LOCK_DEPTH=$((GA_LOCK_DEPTH - 1))
+    return 0
+  fi
+  GA_LOCK_DEPTH=0
   rmdir "$1/docs/architecture/.state/.lock" 2>/dev/null
   return 0
 }
