@@ -50,7 +50,21 @@ _uc_restore() { # ROOT DIR
 _uc_ids() { # ROOT JQ_FILTER [jq args...] -> comma-joined ids from the ledger (filter yields array of ids)
   local root=$1 f=$2
   shift 2
-  jq -r "$@" "$f | join(\", \")" "$(ga_ledger_path "$root")"
+  # jq failure must not read as "nothing wrong": emit a sentinel so callers fail closed.
+  jq -r "$@" "$f | join(\", \")" "$(ga_ledger_path "$root")" 2>/dev/null || echo "(원장을 읽을 수 없습니다)"
+}
+
+_uc_isint() { case "$1" in "" | *[!0-9]*) return 1 ;; *) return 0 ;; esac; }
+
+# No-argument verbs and approval points accept no trailing text.
+_uc_noargs() { # VERB REST -> fails when REST is non-empty
+  [ -z "$2" ] && return 0
+  _uc_fail "'GA $1' 뒤에 다른 글자를 붙일 수 없습니다. 정확히 'GA $1' 형태로만 입력하세요"
+}
+
+# Open/asked assumptions and questions from ALL rounds (they block approvals and 새라운드).
+_uc_open_aq() { # ROOT
+  _uc_ids "$1" '[.items[] | select((.kind == "assumption" or .kind == "question") and (.status == "open" or .status == "asked")) | .id]'
 }
 
 # Common preconditions (G-approval). Records every failure; returns 1 if any.
@@ -66,7 +80,8 @@ _uc_common() { # ROOT PHASE ROUND ITER
       _uc_fail "ga check 오류가 ${n}개 남아 있습니다 — $ids"; bad=1
     fi
   fi
-  ids=$(_uc_ids "$root" '[.items[] | select(.round == $r and (.status == "open" or .status == "asked")) | .id]' --argjson r "$round")
+  # Assumptions/questions of ANY round, plus open deviation decisions of the current round.
+  ids=$(_uc_ids "$root" '[.items[] | select((.status == "open" or .status == "asked") and ((.kind == "assumption" or .kind == "question") or .round == $r)) | .id]' --argjson r "$round")
   if [ -n "$ids" ]; then _uc_fail "아직 해결되지 않은 항목이 있습니다 (open/asked): $ids"; bad=1; fi
   rp=$(ga_report_path "$root")
   st=$(_ga_status_json "$root") || { _uc_fail "상태를 읽을 수 없습니다"; return 1; }
@@ -97,7 +112,7 @@ _uc_append_approval() { # ROOT POINT FROM TO ROUND ITER QUOTE
 }
 
 _uc_approve() { # ROOT POINT QUOTE
-  local root=$1 point=$2 quote=$3 want phase round iter icount mode bad=0 ids n to next_iter newcount ldg
+  local root=$1 point=$2 quote=$3 want phase round iter icount mode bad=0 ids n to next_iter newcount ldg rec_iter hi
   case "$point" in
     입력) want=inputs ;; 반복) want=iterating ;; 설계) want=design-review ;; 뼈대) want=skeleton ;;
     *) _uc_fail "승인 지점은 입력, 반복, 설계, 뼈대 중 하나여야 합니다 (예: GA 승인 입력)"; return 1 ;;
@@ -109,22 +124,36 @@ _uc_approve() { # ROOT POINT QUOTE
   mode=$(ga_state_get "$root" .mode) || return 2
   ldg=$(ga_ledger_path "$root")
   if [ "$phase" != "$want" ]; then
-    _uc_fail "현재 단계는 $phase입니다. 'GA 승인 $point'는 $want 단계에서만 쓸 수 있습니다"; return 1
+    _uc_fail "현재 단계는 ${phase}입니다. 'GA 승인 $point'는 ${want} 단계에서만 쓸 수 있습니다"; return 1
   fi
+  if ! _uc_isint "$round" || ! _uc_isint "$iter" || ! _uc_isint "$icount"; then
+    _uc_fail "state.json의 round/iteration/iteration_count가 정수가 아닙니다 (round=$round iteration=$iter iteration_count=$icount). 파일을 고치세요"; return 1
+  fi
+  rec_iter=$iter
   _uc_common "$root" "$phase" "$round" "$iter" || bad=1
   case "$point" in
     입력)
       ids=$(_uc_ids "$root" '[.items[] | select(.round == $r and .kind == "decision") | .id]' --argjson r "$round")
       if [ -n "$ids" ]; then _uc_fail "입력 단계에는 결정이 없어야 합니다: $ids"; bad=1; fi
-      n=$(jq --argjson r "$round" '[.items[] | select(.round == $r and .kind == "driver" and .driver_type == "purpose")] | length' "$ldg")
-      if [ "$n" = 0 ]; then _uc_fail "목적(purpose) 드라이버가 1개 이상 있어야 합니다"; bad=1; fi
+      n=$(jq --argjson r "$round" '[.items[] | select(.round == $r and .kind == "driver" and .driver_type == "purpose")] | length' "$ldg" 2>/dev/null)
+      if ! _uc_isint "$n" || [ "$n" -lt 1 ]; then _uc_fail "목적(purpose) 드라이버가 1개 이상 있어야 합니다"; bad=1; fi
+      # R18: at least one high driver, iteration numbers exactly 1..N without gaps.
+      hi=$(jq -c --argjson r "$round" '[.items[] | select(.round == $r and .kind == "driver" and .priority == "high" and (.iteration | type) == "number") | .iteration] | unique' "$ldg" 2>/dev/null)
+      if [ -z "$hi" ] || [ "$hi" = "[]" ]; then
+        _uc_fail "high 우선순위 드라이버가 1개 이상 있어야 합니다 (반복 계획이 비어 있습니다)"; bad=1
+      else
+        ids=$(printf '%s' "$hi" | jq -r '. as $h | ($h | max) as $m | [range(1; $m + 1) | select(. as $k | $h | index($k) | not)] | map(tostring) | join(", ")' 2>/dev/null) || ids="?"
+        if [ -n "$ids" ]; then _uc_fail "high 드라이버의 반복 번호가 1부터 빠짐없이 이어지지 않습니다. 빠진 반복: $ids (현재: $hi)"; bad=1; fi
+      fi
       ids=$(_uc_ids "$root" '[.items[] | select(.round == $r and .kind == "driver" and .priority == "high" and ((.iteration | type) != "number" or .iteration < 1)) | .id]' --argjson r "$round")
       if [ -n "$ids" ]; then _uc_fail "high 드라이버에 반복(iteration ≥ 1)이 지정되지 않았습니다: $ids"; bad=1; fi
       ;;
     반복)
       ids=$(_uc_ids "$root" '[ .items as $all | $all[] | select(.round == $r and .kind == "driver" and .priority == "high" and .iteration == $i) as $d
         | select(([$all[] | select(.round == $r and .kind == "decision" and .iteration == $i and ((.drivers // []) | index($d.id) != null))] | length) == 0) | .id]' --argjson r "$round" --argjson i "$iter")
-      if [ -n "$ids" ]; then _uc_fail "반복 $iter의 드라이버가 같은 반복의 결정에 연결되지 않았습니다: $ids"; bad=1; fi
+      if [ -n "$ids" ]; then _uc_fail "반복 ${iter}의 드라이버가 같은 반복의 결정에 연결되지 않았습니다: $ids"; bad=1; fi
+      n=$(jq --argjson r "$round" --argjson i "$iter" '[.items[] | select(.round == $r and .kind == "decision" and .iteration == $i)] | length' "$ldg" 2>/dev/null)
+      if ! _uc_isint "$n" || [ "$n" -lt 1 ]; then _uc_fail "반복 ${iter}에 기록된 결정이 1개 이상 있어야 합니다"; bad=1; fi
       ;;
     설계)
       ids=$(_uc_ids "$root" '[ .items as $all | $all[] | select(.round == $r and .kind == "driver" and .priority == "high") as $d
@@ -133,8 +162,8 @@ _uc_approve() { # ROOT POINT QUOTE
       ;;
     뼈대)
       if [ "$mode" = brownfield ]; then
-        n=$(jq --argjson r "$round" '[.items[] | select(.round == $r and .kind == "mapping")] | length' "$ldg")
-        if [ "$n" = 0 ]; then _uc_fail "기존 코드 대응표(mapping)가 1개 이상 있어야 합니다"; bad=1; fi
+        n=$(jq --argjson r "$round" '[.items[] | select(.round == $r and .kind == "mapping")] | length' "$ldg" 2>/dev/null)
+        if ! _uc_isint "$n" || [ "$n" -lt 1 ]; then _uc_fail "기존 코드 대응표(mapping)가 1개 이상 있어야 합니다"; bad=1; fi
         case "$(_ga_status_json "$root" | jq -r .build_ok)" in
           true) ;;
           false) _uc_fail "빌드 확인이 실패했습니다. 'GA 테스트명령 <명령>'을 확인하거나 고친 뒤 ga verify를 다시 실행하세요"; bad=1 ;;
@@ -148,7 +177,8 @@ _uc_approve() { # ROOT POINT QUOTE
   case "$point" in
     입력)
       to=iterating
-      newcount=$(jq --argjson r "$round" '[.items[] | select(.round == $r and .kind == "driver" and .priority == "high" and (.iteration | type) == "number") | .iteration] | (max // 1) | if . < 1 then 1 else . end' "$ldg") || return 2
+      newcount=$(printf '%s' "$hi" | jq 'max') || return 2
+      _uc_isint "$newcount" || return 2
       ga_state_set "$root" ".phase = \"iterating\" | .iteration = 1 | .iteration_count = $newcount" || return 2
       iter=1; icount=$newcount
       next="반복 1의 드라이버별로 결정을 기록하고 ga verify를 실행한 뒤 'GA 승인 반복'을 입력하세요."
@@ -158,7 +188,7 @@ _uc_approve() { # ROOT POINT QUOTE
         to=iterating; next_iter=$((iter + 1))
         ga_state_set "$root" ".iteration = $next_iter" || return 2
         iter=$next_iter
-        next="반복 $iter의 결정을 기록하고 ga verify를 실행한 뒤 'GA 승인 반복'을 입력하세요."
+        next="반복 ${iter}의 결정을 기록하고 ga verify를 실행한 뒤 'GA 승인 반복'을 입력하세요."
       else
         to=design-review
         ga_state_set "$root" '.phase = "design-review"' || return 2
@@ -176,8 +206,8 @@ _uc_approve() { # ROOT POINT QUOTE
       next="이제 구현할 수 있습니다. 대응표에 없는 경로는 쓰기 전에 ga add mapping으로 기록하세요."
       ;;
   esac
-  _uc_append_approval "$root" "$point" "$phase" "$to" "$round" "$iter" "$quote" || return 2
-  _uc_sum "기록됨: 승인($point) / 단계 $phase→$to (반복 $iter/$icount)"
+  _uc_append_approval "$root" "$point" "$phase" "$to" "$round" "$rec_iter" "$quote" || return 2
+  _uc_sum "기록됨: 승인($point) / 단계 ${phase}→${to} (반복 $iter/$icount)"
   GA_UC_NEXT=$next
   return 0
 }
@@ -209,6 +239,9 @@ _uc_apply() {
   case "$verb" in
     승인)
       _uc_split "$rest"
+      if [ -n "$_UC_B" ]; then
+        _uc_fail "승인 문구 뒤에 다른 글자를 붙일 수 없습니다. 정확히 'GA 승인 $_UC_A' 형태로만 입력하세요"; return 1
+      fi
       _uc_approve "$root" "$_UC_A" "$quote"
       ;;
     확인)
@@ -250,27 +283,35 @@ _uc_apply() {
       _uc_sum "기록됨: $_UC_A 반박 판정($_UC_B)"
       ;;
     일시정지)
+      _uc_noargs 일시정지 "$rest" || return 1
       ga_state_set "$root" '.paused = true' || return 2
       _uc_sum "기록됨: 일시정지 (게이트가 모두 통과합니다. 'GA 재개'로 되돌립니다)"
       ;;
     재개)
+      _uc_noargs 재개 "$rest" || return 1
       ga_state_set "$root" '.paused = false' || return 2
       _uc_sum "기록됨: 재개"
       ;;
     되돌리기)
+      _uc_noargs 되돌리기 "$rest" || return 1
       phase=$(ga_state_get "$root" .phase) || return 2
       case "$phase" in
         design-review | skeleton) ;;
-        *) _uc_fail "되돌리기는 design-review 또는 skeleton 단계에서만 쓸 수 있습니다 (현재: $phase)"; return 1 ;;
+        *) _uc_fail "되돌리기는 design-review 또는 skeleton 단계에서만 쓸 수 있습니다 (현재: ${phase})"; return 1 ;;
       esac
-      ic=$(( $(ga_state_get "$root" .iteration_count) + 1 ))
+      ic=$(ga_state_get "$root" .iteration_count) || return 2
+      _uc_isint "$ic" || { _uc_fail "state.json의 iteration_count가 정수가 아닙니다 ($ic). 파일을 고치세요"; return 1; }
+      ic=$((ic + 1))
       ga_state_set "$root" ".phase = \"iterating\" | .iteration_count = $ic | .iteration = $ic" || return 2
-      _uc_sum "기록됨: 되돌리기 / 단계 $phase→iterating (반복 $ic/$ic)"
+      _uc_sum "기록됨: 되돌리기 / 단계 ${phase}→iterating (반복 $ic/$ic)"
       GA_UC_NEXT="새 반복의 드라이버를 high로 지정하고 결정을 기록한 뒤 ga verify, 'GA 승인 반복'을 진행하세요."
       ;;
     새라운드)
+      _uc_noargs 새라운드 "$rest" || return 1
       phase=$(ga_state_get "$root" .phase) || return 2
-      [ "$phase" = implement ] || { _uc_fail "새라운드는 implement 단계에서만 쓸 수 있습니다 (현재: $phase)"; return 1; }
+      [ "$phase" = implement ] || { _uc_fail "새라운드는 implement 단계에서만 쓸 수 있습니다 (현재: ${phase})"; return 1; }
+      v=$(_uc_open_aq "$root")
+      if [ -n "$v" ]; then _uc_fail "해결되지 않은 가정/질문이 남아 있어 새 라운드를 시작할 수 없습니다: $v"; return 1; fi
       ga_state_set "$root" '.phase = "inputs" | .round += 1 | .iteration = 0 | .iteration_count = 0' || return 2
       _uc_sum "기록됨: 새 라운드 $(ga_state_get "$root" .round) / 단계 implement→inputs"
       GA_UC_NEXT="새 라운드의 입력(드라이버, 제약, 가정)을 정리하고 ga verify, 'GA 승인 입력'을 진행하세요."
@@ -287,6 +328,24 @@ _uc_apply() {
       return 1
       ;;
   esac
+}
+
+GA_UC_BDIR=""; GA_UC_ROOT=""; GA_UC_LOCKED=0; GA_UC_RESTORE=0
+
+# Restores the backup (when GA_UC_RESTORE=1), fully releases the lock, removes the backup dir.
+# Safe to call more than once; used both on exit paths and for the normal finish.
+_uc_abort() {
+  if [ -n "$GA_UC_BDIR" ] && [ -d "$GA_UC_BDIR" ]; then
+    [ "$GA_UC_RESTORE" = 1 ] && _uc_restore "$GA_UC_ROOT" "$GA_UC_BDIR"
+    rm -rf "$GA_UC_BDIR"
+  fi
+  GA_UC_BDIR=""; GA_UC_RESTORE=0
+  if [ "$GA_UC_LOCKED" = 1 ]; then
+    GA_LOCK_DEPTH=1
+    ga_unlock "$GA_UC_ROOT"
+    GA_UC_LOCKED=0
+  fi
+  return 0
 }
 
 cmd_user_command() {
@@ -328,10 +387,16 @@ cmd_user_command() {
 
   GA_UC_FAILS=""; GA_UC_SUM=""; GA_UC_NEXT=""
   bdir=$(mktemp -d "${TMPDIR:-/tmp}/ga-uc.XXXXXX") || ga_die "ga: 임시 디렉터리를 만들 수 없습니다" 2
+  GA_UC_BDIR=$bdir; GA_UC_ROOT=$root; GA_UC_LOCKED=0
+  # Any exit before a clean finish (ga_die from a helper, signal) restores the backup,
+  # releases the lock and removes the backup dir.
+  trap '_uc_abort' EXIT
   ga_lock "$root"
+  GA_UC_LOCKED=1
   if ! _uc_backup "$root" "$bdir"; then
-    ga_unlock "$root"; rm -rf "$bdir"; ga_die "ga: 상태 백업 실패" 2
+    ga_die "ga: 상태 백업 실패" 2
   fi
+  GA_UC_RESTORE=1
   rc=0
   while IFS= read -r line; do
     [[ "$line" =~ ^GA[[:space:]]+([^[:space:]]+)(.*)$ ]]
@@ -348,16 +413,17 @@ cmd_user_command() {
 $lines
 EOF
   if [ "$rc" != 0 ]; then
-    _uc_restore "$root" "$bdir"; ga_unlock "$root"; rm -rf "$bdir"
-    ga_die "ga: user-command 내부 오류로 변경을 되돌렸습니다" 2
+    ga_die "ga: user-command 내부 오류로 변경을 되돌렸습니다" 2   # EXIT trap restores + unlocks
   fi
   if [ -n "$GA_UC_FAILS" ]; then
-    _uc_restore "$root" "$bdir"
-    ga_unlock "$root"; rm -rf "$bdir"
+    _uc_abort
+    trap - EXIT
     _uc_out block "명령을 적용하지 않았습니다 (아무것도 바뀌지 않았습니다):"$'\n'"$GA_UC_FAILS" ""
     return 0
   fi
-  ga_unlock "$root"; rm -rf "$bdir"
+  GA_UC_RESTORE=0
+  _uc_abort
+  trap - EXIT
   ctx=$GA_UC_SUM
   [ -n "$GA_UC_NEXT" ] && ctx=$ctx$'\n'"다음: $GA_UC_NEXT"
   _uc_out allow "" "$ctx"

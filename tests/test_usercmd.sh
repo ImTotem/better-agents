@@ -74,5 +74,38 @@ test_confirm_question_blocks() { use_fake_claude; r=$(mk_project); ga --root "$r
 test_test_command_written() { r=$(ready_inputs); assert_eq allow "$(dec "$(uc "$r" 'GA 테스트명령 make test')")"; assert_eq "make test" "$(cat "$r/docs/architecture/.state/test_command")"; }
 test_test_command_empty_blocks() { r=$(ready_inputs); assert_eq block "$(dec "$(uc "$r" 'GA 테스트명령')")"; assert_status 1 test -f "$r/docs/architecture/.state/test_command"; }
 test_sourcing_has_no_side_effects() { ( . "$CORE/lib/common.sh"; . "$CORE/lib/usercmd.sh"; [ -n "$GA_VERBS" ] ) || _fail "GA_VERBS missing"; }
+nodec_ledger() { jq '.items|=map(select(.id!="ASM-1" and .id!="Q-1" and .id!="FACT-1" and .id!="MAP-1"))' "$FIX/ledger_valid.json"; }
+test_internal_failure_restores_and_unlocks() { use_fake_claude; r=$(mk_project); ga --root "$r" init >/dev/null; seed_ledger "$r" "$FIX/ledger_inputs_open_asm.json"; set_state "$r" '.phase="implement"|.round="1"'
+  sd=$r/docs/architecture/.state; cp "$sd/ledger.json" "$r/l0"; cp "$sd/state.json" "$r/s0"
+  f=$(mktemp); printf 'GA 확인 ASM-1 맞음\nGA 새라운드' >"$f"; rc=0; ga --root "$r" user-command --text-file "$f" >/dev/null 2>&1 || rc=$?
+  assert_eq 2 "$rc"; cmp -s "$sd/ledger.json" "$r/l0" || _fail "ledger not restored"; cmp -s "$sd/state.json" "$r/s0" || _fail "state not restored"
+  assert_status 1 test -d "$sd/.lock"; }
+test_corrupt_state_no_stuck_lock() { r=$(ready_inputs); sd=$r/docs/architecture/.state; echo '{broken' >"$sd/state.json"
+  f=$(mktemp); printf 'GA 일시정지' >"$f"; ga --root "$r" user-command --text-file "$f" >/dev/null 2>&1 || true; assert_status 1 test -d "$sd/.lock"; }
+test_zero_high_drivers_blocks_input() { use_fake_claude; r=$(mk_project); ga --root "$r" init >/dev/null; jq '.items|=map(select(.id=="DRV-1"))' "$FIX/ledger_inputs_ready.json" | seed_ledger "$r" -; ga --root "$r" verify >/dev/null
+  out=$(uc "$r" 'GA 승인 입력'); assert_eq block "$(dec "$out")"; assert_contains "$out" "high"; assert_eq inputs "$(sj "$r" .phase)"; }
+test_iteration_gap_blocks_input() { use_fake_claude; r=$(mk_project); ga --root "$r" init >/dev/null
+  jq '.items += [(.items[]|select(.id=="DRV-3")) | .id="DRV-4" | .iteration=3 | .statement="다른 품질" | .source.quote="다른 요구"]' "$FIX/ledger_inputs_ready.json" | seed_ledger "$r" -; ga --root "$r" verify >/dev/null
+  out=$(uc "$r" 'GA 승인 입력'); assert_eq block "$(dec "$out")"; assert_contains "$out" "2"; assert_eq inputs "$(sj "$r" .phase)"; }
+test_iteration_without_decision_blocks() { use_fake_claude; r=$(mk_project); ga --root "$r" init >/dev/null
+  nodec_ledger | seed_ledger "$r" -; set_state "$r" '.phase="iterating"|.iteration=2|.iteration_count=2'; ga --root "$r" verify >/dev/null
+  out=$(uc "$r" 'GA 승인 반복'); assert_eq block "$(dec "$out")"; assert_contains "$out" "결정"; assert_eq iterating "$(sj "$r" .phase)"; }
+test_earlier_round_open_asm_blocks_new_round() { use_fake_claude; r=$(mk_project); ga --root "$r" init >/dev/null; seed_ledger "$r" "$FIX/ledger_inputs_open_asm.json"; set_state "$r" '.phase="implement"'
+  out=$(uc "$r" 'GA 새라운드'); assert_eq block "$(dec "$out")"; assert_contains "$out" "ASM-1"; assert_eq 1 "$(sj "$r" .round)"; }
+test_earlier_round_open_asm_blocks_approval() { use_fake_claude; r=$(mk_project); ga --root "$r" init >/dev/null; seed_ledger "$r" "$FIX/ledger_inputs_open_asm.json"; set_state "$r" '.round=2'; ga --root "$r" verify >/dev/null
+  out=$(uc "$r" 'GA 승인 입력'); assert_eq block "$(dec "$out")"; assert_contains "$out" "ASM-1"; }
+test_trailing_text_blocks() { r=$(ready_inputs)
+  out=$(uc "$r" 'GA 승인 입력 아직 아님 보류'); assert_eq block "$(dec "$out")"; assert_eq inputs "$(sj "$r" .phase)"
+  assert_eq block "$(dec "$(uc "$r" 'GA 일시정지 지금')")"; assert_eq false "$(sj "$r" .paused)"
+  set_state "$r" '.phase="implement"'; assert_eq block "$(dec "$(uc "$r" 'GA 새라운드 x')")"; assert_eq 1 "$(sj "$r" .round)"
+  assert_eq block "$(dec "$(uc "$r" 'GA 재개 x')")"; set_state "$r" '.phase="skeleton"'; assert_eq block "$(dec "$(uc "$r" 'GA 되돌리기 x')")"; assert_eq skeleton "$(sj "$r" .phase)"; }
+test_approvals_record_pre_transition_iteration() { r=$(ready_inputs); uc "$r" 'GA 승인 입력' >/dev/null
+  assert_eq 0 "$(jq -r .iteration "$r/docs/architecture/.state/approvals.jsonl")"
+  r=$(mk_project); ga --root "$r" init >/dev/null; nodec_ledger | seed_ledger "$r" -; set_state "$r" '.phase="iterating"|.iteration=1|.iteration_count=2'; ga --root "$r" verify >/dev/null
+  uc "$r" 'GA 승인 반복' >/dev/null; assert_eq 1 "$(jq -r .iteration "$r/docs/architecture/.state/approvals.jsonl")"; }
+test_messages_correct_under_utf8() { r=$(ready_inputs); out=$(LC_ALL=ko_KR.UTF-8 uc "$r" 'GA 승인 설계'); assert_contains "$out" "현재 단계는 inputs입니다"
+  out=$(LC_ALL=ko_KR.UTF-8 uc "$r" 'GA 승인 입력'); assert_contains "$out" "inputs→iterating"; }
+test_non_integer_iteration_fails_closed() { use_fake_claude; r=$(mk_project); ga --root "$r" init >/dev/null; nodec_ledger | seed_ledger "$r" -; set_state "$r" '.phase="iterating"|.iteration=1|.iteration_count=1'; ga --root "$r" verify >/dev/null
+  set_state "$r" '.iteration_count="x"'; out=$(uc "$r" 'GA 승인 반복'); assert_eq block "$(dec "$out")"; assert_eq iterating "$(sj "$r" .phase)"; }
 test_lock_is_reentrant() { r=$(mk_project); ga --root "$r" init >/dev/null
   ( . "$CORE/lib/common.sh"; ga_lock "$r"; ga_lock "$r"; ga_unlock "$r"; [ -d "$r/docs/architecture/.state/.lock" ] || exit 1; ga_unlock "$r"; [ ! -d "$r/docs/architecture/.state/.lock" ] ) || _fail "lock not reentrant"; }

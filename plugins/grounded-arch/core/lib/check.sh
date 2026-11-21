@@ -31,7 +31,7 @@ _ga_coderef_error() { # ROOT REF
     esac
     total=$(awk 'END{print NR}' "$root/$path")
     if [ "$line" -lt 1 ] || [ "$line" -gt "$total" ]; then
-      echo "코드 출처의 줄 번호가 파일 범위를 벗어납니다: $ref (파일은 $total줄)"
+      echo "코드 출처의 줄 번호가 파일 범위를 벗어납니다: $ref (파일은 ${total}줄)"
       return 1
     fi
   else

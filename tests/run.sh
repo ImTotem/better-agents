@@ -4,6 +4,10 @@
 # HOME and tests/fakes first on PATH (no real ~/.claude, no real model).
 REPO=$(cd -P "$(dirname "$0")/.." && pwd)
 if [ $# -eq 0 ]; then set -- "$REPO"/tests/test_*.sh; fi
+# Production-like UTF-8 locale (bash 3.2 reads high bytes after $name as part of the name).
+for _l in ko_KR.UTF-8 en_US.UTF-8; do
+  if locale -a 2>/dev/null | grep -qix "$_l"; then LC_ALL=$_l; export LC_ALL; break; fi
+done
 fails=0
 for f in "$@"; do
   if [ ! -f "$f" ]; then echo "FAIL $f (missing)"; fails=$((fails+1)); continue; fi
