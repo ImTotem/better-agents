@@ -168,7 +168,7 @@ test_i6_corrupt_state_write_denied_with_recovery() { local r out; r=$(phase inpu
 test_i7_state_ancestor_writes_denied_every_phase() { local p
   for p in implement skeleton; do
     bd $p deny 'rm -rf docs/architecture'; bd $p deny 'rm -rf docs'; bd $p deny 'mv docs/architecture docs/old'; bd $p deny 'rm -rf .'
-    bd $p deny 'cp -r /tmp/x docs/architecture'; bd $p deny 'cp /tmp/f.json docs/architecture/.stat?/state.json'
+    bd $p deny 'cp -r /tmp/x/ docs/architecture'; bd $p deny 'cp /tmp/f.json docs/architecture/.stat?/state.json'
     bd $p deny 'tee docs/architecture/.st*/state.json < /tmp/f.json'; bd $p deny 'rm -rf docs/*'; bd $p deny 'mkdir docs/architecture/.state/.lock'
     bd $p allow 'rm -rf build'; bd $p allow 'cp src/a.c src/b.c'; bd $p allow 'mv docs/notes.md docs/old-notes.md'
   done; }
@@ -218,3 +218,65 @@ python3 x.py > src/a.c"
 rm -rf src
 EOF"; }
 test_r35_shell_c_and_eval_scanned() { bd inputs deny 'bash -c "rm -rf src"'; bd inputs deny "sh -c 'echo x > src/a.c'"; bd inputs deny "eval 'rm -rf src'"; bd inputs allow 'bash -c "ls -la"'; }
+
+# --- targeted fix wave: N1 false denies, N2 nested repo, O1 globbed redirects ---
+bx() { # DIR EXPECTED CMD   (gate run with cwd DIR; names the command on failure)
+  local got; got=$(bash_dec "$1" "$3"); [ "$got" = "$2" ] || _fail "[$3] in ${1##*/}: expected $2 got $got"; }
+# N1: variable and glob targets that cannot reach .state are not .state targets (cwd = root).
+test_n1_var_glob_targets_allowed() { local p r c
+  for p in implement skeleton; do
+    r=$(phase $p); mkdir -p "$r/src" "$r/build"
+    for c in 'rm -f *.o' 'rm -rf "$tmp"' 'tmp=$(mktemp -d) && rm -rf "$tmp"' "sed -i '' 's/a/b/' *.c" 'mkdir -p "$OUT"' \
+             'mkdir -p "$(dirname "$f")"' 'cp "$src" "$dst"' 'mv *.txt build/' 'for f in src/*.c; do sed -i "" "s/a/b/" "$f"; done' \
+             'cd build && rm -f *.o' 'cp ../x .' 'rm -rf build/*' 'rm -rf src/{a,b}.o' 'cp src/*.c build/'; do
+      bx "$r" allow "$c"; done
+  done; }
+test_n1_state_reaching_targets_still_denied() { local p r c
+  for p in implement skeleton; do
+    r=$(phase $p); mkdir -p "$r/build"
+    for c in 'rm -rf *' 'rm -rf ./*' 'rm -rf d*' 'rm -rf docs/a*' 'rm -rf docs' 'rm -rf docs/architecture' 'mv docs/architecture x' \
+             'cp ../docs .' 'rm -rf docs/*/.state' 'rm -rf $X/architecture' 'rm -f "$D"/.state/x' 'rm -rf D?CS' 'rm -rf {build,docs}' \
+             'rm -rf docs/{a,b}*/.s*' 'rm -rf docs/**' 'rm -rf "$D"/*' 'cd build && rm -rf *' 'cd build && rm -rf ../d*' \
+             'cp -t . ../docs' 'cp -R /tmp/x/ docs' 'mv /tmp/x/.STATE docs/architecture/' 'install -d -m 000 x docs' \
+             'rm -rf build/*/../../docs' 'rm -rf ../*' 'echo x > build/*/../../docs/a*/.s*/state.json'; do
+      bx "$r" deny "$c"; done
+  done; }
+# N1 (d): cp/mv/ln/install into an existing directory write <dir>/<basename of each source>.
+test_n1_copy_into_existing_dir_classifies_written_path() { local r
+  r=$(phase implement)
+  bx "$r" allow 'cp -r /tmp/x docs/architecture'; bx "$r" allow 'cp -r /tmp/x docs'; bx "$r" allow 'ln -s ../x .'
+  bx "$r" deny 'cp -r /tmp/x/ docs/architecture'; bx "$r" deny 'cp -R /tmp/.state docs/architecture'; bx "$r" deny 'cp -rT /tmp/x docs'
+  bx "$r" deny 'cp -r /tmp/x/. docs/architecture'; bx "$r" deny 'cp "$S" docs/architecture/'; }
+# N2: from a nested repository (cwd inside it) the design is found from the write targets.
+nested() { # GITKIND(file|dir) PHASE [MODE] -> design root with vendor/lib as a nested repo
+  local r; r=$(phase "$2" ${3:-greenfield}); mkdir -p "$r/.git" "$r/src" "$r/vendor/lib"
+  if [ "$1" = file ]; then echo 'gitdir: ../../.git/modules/lib' >"$r/vendor/lib/.git"; else mkdir -p "$r/vendor/lib/.git"; fi
+  echo "$r"; }
+test_n2_nested_repo_targets_use_outer_design() { local k r v
+  for k in file dir; do
+    r=$(nested $k iterating); v=$r/vendor/lib
+    bx "$v" deny 'rm -rf ../../docs/architecture/.state'; bx "$v" deny 'echo x > ../../src/main.c'
+    bx "$v" deny "cp x $r/src/a.c"; bx "$v" deny 'cd ../.. && echo x > src/main.c'
+    bx "$v" allow 'make'; bx "$v" allow 'rm -f foo.o && echo x > build.log'; bx "$v" allow 'echo x > /tmp/ga-x'
+    bx "$v" allow 'echo x >> ../../docs/architecture/notes.md'
+    r=$(nested $k implement); v=$r/vendor/lib
+    bx "$v" deny 'rm -rf ../../docs/architecture/.state'; bx "$v" deny 'rm -rf ../../docs'; bx "$v" deny 'rm -rf ../../d*'
+    bx "$v" deny 'echo {} > ../../docs/a*/.s*/state.json'; bx "$v" deny 'cd ../.. && rm -rf docs'; bx "$v" deny 'rm -rf ../..'
+    bx "$v" deny 'rm -rf ../../..'
+    bx "$v" allow 'echo x > ../../src/main.c'; bx "$v" allow 'rm -f ../../build/*.o'; bx "$v" allow 'make'
+  done; }
+test_n2_nested_repo_brownfield_and_pause() { local r v
+  r=$(nested file skeleton brownfield); seed_map "$r" src/new.c new; v=$r/vendor/lib
+  bx "$v" deny 'echo x > ../../src/main.c'; bx "$v" allow 'echo x > ../../src/new.c'; bx "$v" deny 'rm -f ../../src/*.o'
+  bx "$v" allow 'echo x > local.c'
+  r=$(nested dir iterating); v=$r/vendor/lib; set_state "$r" '.paused=true'
+  bx "$v" allow 'echo x > ../../src/main.c'; bx "$v" allow 'rm -rf ../../src'; }
+# O1: a globbed redirect is classified like a command target (text, then the glob walk toward .state).
+test_o1_globbed_redirect_into_state_denied() { local p r
+  for p in implement skeleton; do
+    r=$(phase $p)
+    bx "$r" deny 'echo {} > d*/a*/.s*/approvals.jsonl'; bx "$r" deny 'echo {} > docs/a*/.s*/state.json'
+    bx "$r" deny 'echo {} >> D?CS/*/.st?te/ledger.json'
+    bx "$r" allow 'echo hi > "$LOG"'; bx "$r" allow 'echo hi > out.txt'; bx "$r" allow 'npm test 2>&1 | tee test.log'
+    bx "$r" allow 'echo hi > build/*.log'
+  done; }

@@ -282,11 +282,31 @@ _ga_seg_command_match() {
   esac
 }
 
+# True when WORD is a literal path (not relative after a cd) to an existing directory.
+_ga_is_dir() { # WORD
+  _ga_tgt_norm "$1"
+  case "$NT" in '' | *'$'* | *'*'* | *'?'* | *'['* | *'{'* | *'`'*) return 1 ;; esac
+  if [ "$CD_SEEN" = 1 ]; then case "$NT" in /*) ;; *) return 1 ;; esac; fi
+  [ -d "$NT" ]
+}
+
+# Sets INTO to the path SRC is written to inside directory DEST (N1 d). A source ending in /
+# stands for its contents (BSD cp -R src/ dir), so it is written as DEST itself.
+_ga_into() { # DEST SRC
+  local d b
+  _ga_tgt_norm "$1"; d=${NT%/}
+  _ga_tgt_norm "$2"
+  case "$NT" in */) b=. ;; *) b=${NT##*/} ;; esac
+  INTO=$d/${b:-.}
+}
+
 # Sets TG (target words of a write command) and TG_KIND (w = writes, p = .state/plugin
 # protection only). Returns 1 for commands whose targets are not determined here.
+# cp/ln/install/mv into an existing directory target <dir>/<basename of each source> (N1 d).
 _ga_seg_targets() {
-  local j=$((CW_IDX + 1)) w wc skip=0 optsv="" mode=all endopt=0 script=0 last="" tdir=0 nx
+  local j=$((CW_IDX + 1)) w wc skip=0 optsv="" mode=all endopt=0 script=0 nx tdw="" notdir=0 n INTO NT
   local re_redir='^[0-9]*([<>]|&>)' re_redir_alone='^[0-9]*(>>?|<<?<?|&>>?|>&|<&)$'
+  local -a ops
   TG=(); TG_KIND=w
   if [ "$CW" = git ]; then
     # git checkout/restore PATHS rewrite files (including a tracked .state) from another revision.
@@ -313,9 +333,9 @@ _ga_seg_targets() {
     return 0
   fi
   case "$CW" in
-    tee | rm | touch | truncate | mv) ;;
+    tee | rm | touch | truncate) ;;
     mkdir | rmdir) TG_KIND=p ;;
-    cp | ln | install) mode=last ;;
+    cp | ln | install | mv) mode=copy ;;
     dd) mode=dd ;;
     sed) [ "$SEG_MATCH" = "sed -i" ] || return 1; mode=script ;;
     perl) [ "$SEG_MATCH" = "perl -i" ] || return 1; mode=script ;;
@@ -328,6 +348,18 @@ _ga_seg_targets() {
     touch) optsv=" -t -d -r --date --reference " ;;
     mkdir) optsv=" -m --mode " ;;
   esac
+  # install -d DIR...: every operand is a directory it creates (or changes the mode of).
+  if [ "$CW" = install ]; then
+    for w in "${words[@]:$j}"; do
+      wc=${w//[\'\"]/}
+      case "$wc" in
+        --) break ;;
+        --directory) mode=all ;;
+        --*) ;;
+        -*) if [[ $wc =~ ^-[A-Za-z]*d[A-Za-z]*$ ]]; then mode=all; fi ;;
+      esac
+    done
+  fi
   while [ $j -lt ${#words[@]} ]; do
     w=${words[$j]}
     j=$((j + 1))
@@ -342,8 +374,11 @@ _ga_seg_targets() {
       case "$wc" in
         --) endopt=1; continue ;;
         -t | --target-directory)
-          case "$CW" in cp | ln | install | mv) TG+=("${words[$j]}"); tdir=1; skip=1; continue ;; esac ;;
-        --target-directory=*) TG+=("${wc#*=}"); tdir=1; continue ;;
+          case "$CW" in cp | ln | install | mv)
+            if [ "$mode" = copy ]; then tdw=${words[$j]-}; else TG+=("${words[$j]-}"); fi
+            skip=1; continue ;; esac ;;
+        --target-directory=*) if [ "$mode" = copy ]; then tdw=${wc#*=}; else TG+=("${wc#*=}"); fi; continue ;;
+        -T | --no-target-directory) notdir=1; continue ;;
       esac
       case "$wc" in
         -*)
@@ -360,51 +395,261 @@ _ga_seg_targets() {
             fi
             continue
           fi
+          # short option clusters: -rT (no target directory), -rt DIR (target directory)
+          if [ "$mode" = copy ] && [[ $wc != --* ]]; then
+            if [[ $wc =~ ^-[A-Za-z]*T ]]; then notdir=1; fi
+            if [[ $wc =~ ^-[A-Za-z]+t$ ]]; then tdw=${words[$j]-}; skip=1; continue; fi
+          fi
           case "$optsv" in *" $wc "*) skip=1 ;; esac
           continue ;;
       esac
     fi
     case "$mode" in
       all) TG+=("$w") ;;
-      last) last=$w ;;
+      copy) ops+=("$w") ;;
       dd) case "$wc" in of=*) TG+=("${wc#of=}") ;; esac ;;
       script) if [ $script = 0 ]; then script=1; else TG+=("$w"); fi ;;
     esac
   done
-  [ -n "$last" ] && [ $tdir = 0 ] && TG+=("$last")
+  if [ "$mode" = copy ]; then
+    n=${#ops[@]}
+    if [ -z "$tdw" ]; then
+      [ "$n" -gt 0 ] || return 0
+      n=$((n - 1)); tdw=${ops[$n]}
+    fi
+    # mv also removes its sources.
+    if [ "$CW" = mv ] && [ "$n" -gt 0 ]; then TG+=("${ops[@]:0:$n}"); fi
+    if [ "$n" -gt 0 ] && [ $notdir = 0 ] && _ga_is_dir "$tdw"; then
+      j=0
+      while [ $j -lt "$n" ]; do _ga_into "$tdw" "${ops[$j]}"; TG+=("$INTO"); j=$((j + 1)); done
+    else
+      TG+=("$tdw")
+    fi
+  fi
   return 0
 }
 
 _ga_t_state() { T_STATE=${T_STATE:-$1}; }
+
+# Sets NT to target word RAW with quotes removed and $TMPDIR/, $HOME, ~ expanded from the
+# gate's own environment.
+_ga_tgt_norm() { # RAW
+  NT=${1//[\'\"]/}
+  case "$NT" in
+    '$TMPDIR/'* | '${TMPDIR}/'*) [ "$TMPDIR_REASSIGNED" = 1 ] || NT=${TMPDIR:-/tmp}/${NT#*/} ;;
+    '$HOME/'*) NT=$HOME/${NT#\$HOME/} ;;
+    '${HOME}/'*) NT=$HOME/${NT#\$\{HOME\}/} ;;
+    '~/'*) NT=$HOME/${NT#\~/} ;;
+    '~' | '$HOME' | '${HOME}') NT=$HOME ;;
+  esac
+}
+
+# Sets PC to the canonical literal directory prefix of unexpanded target T ("" when it cannot
+# be resolved: relative after a cd/pushd, or not canonicalizable).
+_ga_prefix_canon() { # T
+  local p=${1%%[\$\*\?\[\{\`]*}
+  case "$p" in */*) p=${p%/*}; [ -n "$p" ] || p=/ ;; *) p=. ;; esac
+  PC=""
+  if [ "$CD_SEEN" = 1 ]; then case "$p" in /*) ;; *) return 0 ;; esac; fi
+  PC=$(ga_canon "$p" 2>/dev/null) || PC=""
+}
+
+# N2: sets LR to the design root that governs canonical path C: ga_find_root from C's deepest
+# existing directory (as the write gate does). When C is an existing directory containing the
+# cwd (rm -rf ../../.. from a nested repository), a design between the cwd and C is inside C.
+_ga_lookup_root() { # C
+  local d=$1 p=$CWDP
+  LR=""
+  while [ ! -d "$d" ] && [ "$d" != / ]; do d=${d%/*}; [ -n "$d" ] || d=/; done
+  LR=$(ga_find_root "$d") && return 0
+  LR=""
+  [ "$d" = "$1" ] && [ -n "$p" ] || return 1
+  while _ga_under "$d" "$p"; do
+    if [ -f "$p/docs/architecture/.state/state.json" ]; then LR=$p; return 0; fi
+    [ "$p" != / ] || break
+    p=${p%/*}; [ -n "$p" ] || p=/
+  done
+  return 1
+}
+
+_ga_add_root() { # ROOT  (adds a design found from a target or a cd to FOUND_ROOTS)
+  [ -n "$1" ] && [ "$1" != "$ROOT0" ] || return 0
+  case "$NL$FOUND_ROOTS" in *"$NL$1$NL"*) ;; *) FOUND_ROOTS=$FOUND_ROOTS$1$NL ;; esac
+}
+
+# N2: which pass checks a write target. C = its canonical path, or "" when it cannot be resolved
+# (relative after a cd). The cwd pass (OWN=0) checks every target and records the designs found
+# from them; DISC=1 (no active design at the cwd) only records. A pass for a design found that
+# way (OWN=1, root = that design) checks only its own targets, and unresolved ones only when a
+# cd/pushd went into it (OWN_CD); it sets OWN_HIT. Returns 1 when the caller should skip.
+_ga_own() { # C|""
+  local lr="" LR
+  if [ -n "$1" ]; then _ga_lookup_root "$1"; lr=$LR; fi
+  if [ "$OWN" = 1 ]; then
+    if [ -n "$1" ]; then [ "$lr" = "$root" ] || return 1; else [ "$OWN_CD" = 1 ] || return 1; fi
+    OWN_HIT=1
+    return 0
+  fi
+  _ga_add_root "$lr"
+  [ "$DISC" != 1 ]
+}
+
+# N2: a cd/pushd into a design (cd ../.. from a nested repository) makes the relative targets
+# after it that design's. CD_CUR follows the cds in order ("" once unknown). Uses words/CW_IDX.
+_ga_cd_seg() {
+  local k=$((CW_IDX + 1)) w="" c r NT LR
+  while [ $k -lt ${#words[@]} ]; do
+    case "${words[$k]}" in -) w=-; break ;; -*) k=$((k + 1)) ;; *) w=${words[$k]}; break ;; esac
+  done
+  [ -n "$CD_CUR" ] || return 0
+  if [ -z "$w" ]; then c=$HOME; else _ga_tgt_norm "$w"; c=$NT; fi
+  case "$c" in
+    '' | - | *'$'* | *'*'* | *'?'* | *'['* | *'{'* | *'`'*) CD_CUR=""; return 0 ;;
+    /*) ;;
+    *) c=$CD_CUR/$c ;;
+  esac
+  if ! c=$(ga_canon "$c" 2>/dev/null) || [ ! -d "$c" ]; then CD_CUR=""; return 0; fi
+  CD_CUR=$c
+  _ga_lookup_root "$c" || return 0
+  r=$LR
+  _ga_add_root "$r"
+  case "$NL$CD_ROOTS" in *"$NL$r$NL"*) ;; *) CD_ROOTS=$CD_ROOTS$r$NL ;; esac
+}
+
+# Brace expansion of S into BX (bash expands {a,b} lists before globbing, also in a redirect
+# target). A {x..y} sequence becomes *, ${...} is left alone. Returns 1 past 64 alternatives.
+_ga_brace_alts() { BX=(); _ga_bx "$1"; } # S
+_ga_bx() { # S
+  local s=$1 n=${#1} i=0 j d st alt
+  local -a parts
+  while [ $i -lt $n ]; do
+    case "${s:$i:1}" in
+      \\) i=$((i + 2)); continue ;;
+      '{')
+        d=0; j=$i; st=$((i + 1)); parts=()
+        while [ $j -lt $n ]; do
+          case "${s:$j:1}" in
+            \\) j=$((j + 1)) ;;
+            '{') d=$((d + 1)) ;;
+            '}') d=$((d - 1)); [ $d -gt 0 ] || break ;;
+            ,) if [ $d = 1 ]; then parts+=("${s:$st:$((j - st))}"); st=$((j + 1)); fi ;;
+          esac
+          j=$((j + 1))
+        done
+        if [ $j -lt $n ] && [ $i -gt 0 ] && [ "${s:$((i - 1)):1}" = '$' ]; then
+          i=$((j + 1)); continue
+        fi
+        if [ $j -lt $n ]; then
+          if [ ${#parts[@]} -gt 0 ]; then
+            parts+=("${s:$st:$((j - st))}")
+            for alt in "${parts[@]}"; do _ga_bx "${s:0:$i}${alt}${s:$((j + 1))}" || return 1; done
+            return 0
+          fi
+          case "${s:$((i + 1)):$((j - i - 1))}" in
+            *..*) _ga_bx "${s:0:$i}*${s:$((j + 1))}"; return ;;
+          esac
+        fi ;;
+    esac
+    i=$((i + 1))
+  done
+  [ ${#BX[@]} -lt 64 ] || return 1
+  BX+=("$s")
+}
+
+# Glob walk over comps[] (from index S) against names[] (from index K), both of the caller.
+# True when every component matches the name it lines up with (case-insensitive: APFS) up to
+# the end of the pattern; past the last name (inside .state) anything matches. ** and .. fail
+# closed; a component with $ or a backtick cannot be evaluated and matches one name.
+_ga_walk() { # S K
+  local i=$1 k=$2 c m=1 nc=0
+  shopt -q nocasematch && nc=1
+  shopt -s nocasematch
+  while [ $i -lt ${#comps[@]} ]; do
+    c=${comps[$i]}; i=$((i + 1))
+    case "$c" in '' | .) continue ;; esac
+    [ $k -lt ${#names[@]} ] || break
+    case "$c" in
+      *'**'* | ..) break ;;
+      *'$'* | *'`'*) ;;
+      *) [[ ${names[$k]} == $c ]] || { m=0; break; } ;;
+    esac
+    k=$((k + 1))
+  done
+  [ $nc = 1 ] || shopt -u nocasematch
+  [ $m = 1 ]
+}
+
+# N1/O1 (R32a b): true when brace alternative A may name ST, something inside it or an
+# ancestor of it. From A's literal directory prefix, the remaining components are matched
+# against the path toward ST (_ga_walk). After a cd the prefix is unknown: any `..` fails closed
+# and the pattern may line up anywhere with docs/architecture/.state. A without a glob that holds
+# a variable, $(...) or backtick is not a .state target (limit (c)).
+_ga_glob_reaches() { # A
+  local a=$1 pre pdir rest P rel s k
+  local -a comps names
+  case "$a" in
+    *'*'* | *'?'* | *'['*) ;;
+    *'$'* | *'`'*) return 1 ;;
+  esac
+  pre=${a%%[\$\*\?\[\`]*}
+  case "$pre" in
+    */*) pdir=${pre%/*}; rest=${a:$((${#pdir} + 1))}; [ -n "$pdir" ] || pdir=/ ;;
+    *) pdir=.; rest=$a ;;
+  esac
+  if [ "$CD_SEEN" = 1 ] && [ "${pdir#/}" = "$pdir" ]; then
+    IFS=/ read -r -a comps <<<"$pdir/$rest"
+    for s in "${comps[@]}"; do [ "$s" != .. ] || return 0; done
+    names=(docs architecture .state)
+    s=0
+    while [ $s -lt ${#comps[@]} ]; do
+      case "${comps[$s]}" in
+        '' | .) ;;
+        *) for k in 0 1 2; do _ga_walk $s $k && return 0; done ;;
+      esac
+      s=$((s + 1))
+    done
+    return 1
+  fi
+  P=$(ga_canon "$pdir" 2>/dev/null) || return 1
+  # a .. after the first pattern component can leave the prefix directory: fail closed
+  case "/$rest/" in */../*) return 0 ;; esac
+  _ga_under "$ST" "$P" && return 0
+  _ga_under "$P" "$ST" || return 1
+  if [ "$P" = / ]; then rel=${ST#/}; else rel=${ST:$((${#P} + 1))}; fi
+  IFS=/ read -r -a comps <<<"$rest"
+  IFS=/ read -r -a names <<<"$rel"
+  _ga_walk 0 0
+}
+
+# Unexpanded target T (R32a): a .state target when (a) its text mentions architecture or .state,
+# or (b) a brace alternative reaches .state (_ga_glob_reaches). Too many alternatives: fail closed.
+_ga_unexp_state() { # T
+  local a
+  local -a BX
+  case "$(_ga_lc "$1")" in *architecture* | *.state*) return 0 ;; esac
+  _ga_brace_alts "$1" || return 0
+  for a in "${BX[@]}"; do _ga_glob_reaches "$a" && return 0; done
+  return 1
+}
 
 # Classifies one write target RAW of a command (R32a/c, R34d). Uses ST (the .state dir),
 # PLUG (plugin root), root, CD_SEEN, TMPDIR_REASSIGNED. Sets T_STATE (target is .state, inside
 # it, or an ancestor of it), T_PLUGIN (inside or an ancestor of the plugin), T_UNRES (an
 # unresolvable write target) and appends in-root, non-docs/architecture write targets to TL.
 _ga_check_target() { # RAW KIND
-  local raw=$1 t c p lc rel
-  t=${raw//[\'\"]/}
+  local raw=$1 t c lc rel PC NT
+  _ga_tgt_norm "$raw"; t=$NT
   [ -n "$t" ] || return 0
-  case "$t" in
-    /dev/null | /dev/stdout | /dev/stderr) return 0 ;;
-    '$TMPDIR/'* | '${TMPDIR}/'*) [ "$TMPDIR_REASSIGNED" = 1 ] || t=${TMPDIR:-/tmp}/${t#*/} ;;
-    '$HOME/'*) t=$HOME/${t#\$HOME/} ;;
-    '${HOME}/'*) t=$HOME/${t#\$\{HOME\}/} ;;
-    '~/'*) t=$HOME/${t#\~/} ;;
-    '~' | '$HOME' | '${HOME}') t=$HOME ;;
-  esac
+  case "$t" in /dev/null | /dev/stdout | /dev/stderr) return 0 ;; esac
   case "$t" in
     *'$'* | *'*'* | *'?'* | *'['* | *'{'* | *'`'*)
-      # Unexpandable: protect by text and by the literal directory prefix.
-      lc=$(_ga_lc "$t")
-      case "$lc" in *architecture*) _ga_t_state "$raw" ;; esac
-      p=${t%%[\$\*\?\[\{\`]*}
-      case "$p" in */*) p=${p%/*}; [ -n "$p" ] || p=/ ;; *) p=. ;; esac
-      if [ "$CD_SEEN" = 1 ]; then case "$p" in /*) ;; *) _ga_t_state "$raw" ;; esac; fi
-      c=$(ga_canon "$p" 2>/dev/null) || c=""
-      if [ "$CD_SEEN" = 1 ]; then case "$p" in /*) ;; *) c="" ;; esac; fi
+      # Unexpanded: .state by text or by a glob that reaches it; plugin and project membership
+      # by the literal directory prefix.
+      _ga_prefix_canon "$t"
+      c=$PC
+      _ga_own "$c" || return 0
+      _ga_unexp_state "$t" && _ga_t_state "$raw"
       if [ -n "$c" ]; then
-        _ga_under "$c" "$ST" && _ga_t_state "$raw"
         { _ga_under "$c" "$PLUG" || _ga_under "$PLUG" "$c"; } && T_PLUGIN=${T_PLUGIN:-$raw}
         # a literal directory outside the project cannot expand into it
         _ga_under "$root" "$c" || _ga_under "$c" "$root" || return 0
@@ -416,6 +661,7 @@ _ga_check_target() { # RAW KIND
     case "$t" in
       /*) ;;
       *)
+        _ga_own "" || return 0
         # After cd/pushd a relative target cannot be resolved; refuse the obvious .state ancestors.
         rel=${t#./}; rel=${rel%/}; lc=$(_ga_lc "$rel")
         case "/$lc/" in */../* | /./ | //) _ga_t_state "$raw" ;; esac
@@ -427,6 +673,7 @@ _ga_check_target() { # RAW KIND
     esac
   fi
   c=$(ga_canon "$t" 2>/dev/null) || c=""
+  _ga_own "$c" || return 0
   if [ -z "$c" ]; then [ "$2" = w ] && T_UNRES=${T_UNRES:-$raw}; return 0; fi
   { _ga_under "$c" "$ST" || _ga_under "$ST" "$c"; } && _ga_t_state "$raw"
   { _ga_under "$PLUG" "$c" || _ga_under "$c" "$PLUG"; } && T_PLUGIN=${T_PLUGIN:-$raw}
@@ -441,7 +688,7 @@ _ga_check_target() { # RAW KIND
 # feeds the same targets to the plugin/brownfield checks (T_PLUGIN, T_UNRES, TL).
 # Quoted '>' characters (e.g. echo "a > b") can produce false denies; accepted (best effort).
 _ga_scan_redirects() { # SEG ROOT
-  local rest=$1 root=$2 re t amp c
+  local rest=$1 root=$2 re t amp c PC
   re='^[^>]*>(>?)(&?)[[:space:]]*([^[:space:]<>]*)(.*)$'
   while [[ $rest =~ $re ]]; do
     amp=${BASH_REMATCH[2]}
@@ -464,26 +711,32 @@ _ga_scan_redirects() { # SEG ROOT
     # Unexpandable targets (variables, globs, braces, backticks) are never exempt.
     case "$t" in
       *'$'* | *'*'* | *'?'* | *'['* | *'{'* | *'`'*)
+        _ga_prefix_canon "$t"
+        _ga_own "$PC" || continue
         [ -n "$R_BAD" ] || R_BAD="> $t"
         R_ANYBAD=1
         T_UNRES=${T_UNRES:-"> $t"}
-        # a glob/variable inside docs/architecture/... may expand to .state: treat as a .state write
-        case "$(_ga_lc "$t")" in *architecture/*) R_STATE=1 ;; esac
+        # O1: bash expands a single-match redirect glob, so classify it like a command target
+        # (text, then the glob walk toward .state).
+        _ga_unexp_state "$t" && R_STATE=1
         continue ;;
     esac
     # After a cd/pushd in the same command, relative targets cannot be resolved: not exempt.
     if [ "$CD_SEEN" = 1 ]; then
       case "$t" in
         /*) ;;
-        *) [ -n "$R_BAD" ] || R_BAD="> $t"; R_ANYBAD=1; T_UNRES=${T_UNRES:-"> $t"}; continue ;;
+        *) _ga_own "" || continue
+           [ -n "$R_BAD" ] || R_BAD="> $t"; R_ANYBAD=1; T_UNRES=${T_UNRES:-"> $t"}; continue ;;
       esac
     fi
     if ! c=$(ga_canon "$t" 2>/dev/null) || [ -z "$c" ]; then
+      _ga_own "" || continue
       [ -n "$R_BAD" ] || R_BAD="> $t"
       R_ANYBAD=1
       T_UNRES=${T_UNRES:-"> $t"}
       continue
     fi
+    _ga_own "$c" || continue
     _ga_under "$PLUG" "$c" && T_PLUGIN=${T_PLUGIN:-"> $t"}
     if _ga_under "$root/docs/architecture/.state" "$c"; then
       [ -n "$R_BAD" ] || R_BAD="> $t"
@@ -501,7 +754,7 @@ _ga_scan_redirects() { # SEG ROOT
 # Scans one command segment (loop body of the bash gate; uses the gate's locals).
 # DEPTH bounds the recursion into `bash -c STRING` / `eval STRING`.
 _ga_bash_seg() { # SEG DEPTH
-  local seg=$1 depth=${2:-0} k t sub skipcmd=0
+  local seg=$1 depth=${2:-0} k t sub skipcmd=0 OWN_HIT=0
   local -a words
   words=($seg)
   [ ${#words[@]} -gt 0 ] || return 0
@@ -529,11 +782,14 @@ _ga_bash_seg() { # SEG DEPTH
     fi
     if [ $skipcmd = 0 ]; then
       _ga_seg_command_match
-      if [ -n "$SEG_MATCH" ] && [ -z "$match" ]; then match=$SEG_MATCH; fi
       if _ga_seg_targets; then
         for t in ${TG[@]+"${TG[@]}"}; do _ga_check_target "$t" "$TG_KIND"; done
       fi
+      # In a pass for a design found from the targets, a write command counts only with a
+      # target in that design.
+      if [ -n "$SEG_MATCH" ] && [ -z "$match" ] && { [ "$OWN" != 1 ] || [ "$OWN_HIT" = 1 ]; }; then match=$SEG_MATCH; fi
     fi
+    case "$CW" in cd | pushd) _ga_cd_seg ;; esac
     # `sh -c STRING` and `eval STRING`: the string is a command line too.
     if [ "$depth" -lt 3 ]; then
       case "$CW" in
@@ -557,8 +813,7 @@ _ga_bash_seg() { # SEG DEPTH
 }
 
 _ga_gate_bash() {
-  local cmd="" root phase body segs seg corrupt=0 where
-  local re_internal='(^|[;&|/[:space:]])ga[[:space:]]+(--root[= ][^[:space:]]+[[:space:]]+)?(user-command|hook)([^A-Za-z0-9_-]|$)'
+  local cmd="" ROOT0 FOUND_ROOTS="" CD_ROOTS="" EV_OUT="" NL=$'\n' r CWDP
   while [ $# -gt 0 ]; do
     case "$1" in
       --command) [ $# -ge 2 ] || break; cmd=$2; shift 2 ;;
@@ -566,20 +821,55 @@ _ga_gate_bash() {
       *) shift ;;
     esac
   done
-  root=$(ga_find_root "$PWD") || { _ga_gate_out allow ""; return 0; }
-  if ga_paused_marker "$root"; then _ga_gate_out allow ""; return 0; fi
-  if ! _ga_gate_state "$root"; then
+  ROOT0=$(ga_find_root "$PWD") || ROOT0=""
+  CWDP=$(pwd -P) || CWDP=""
+  _ga_bash_eval "$cmd" "$ROOT0" 0
+  # N2: designs found from the write targets or a cd/pushd (the walk from the cwd stops at the
+  # first .git, so a cwd in a nested repository does not see the design around it). Each applies
+  # its rules to its own targets as if the cwd were inside it.
+  if [ -z "$EV_OUT" ] && [ -n "$FOUND_ROOTS" ]; then
+    while IFS= read -r r; do
+      [ -n "$r" ] || continue
+      _ga_bash_eval "$cmd" "$r" 1
+      [ -z "$EV_OUT" ] || break
+    done <<EOF
+$FOUND_ROOTS
+EOF
+  fi
+  [ -n "$EV_OUT" ] || EV_OUT=$(_ga_gate_out allow "")
+  printf '%s\n' "$EV_OUT"
+}
+
+_ga_ev_deny() { EV_OUT=$(_ga_gate_out deny "$1"); } # REASON
+
+# One pass of the bash gate for design ROOT. OWN=0: the design found from the cwd ("" = none):
+# every target is checked and the designs found from targets are recorded (only recorded when
+# there is no active design here). OWN=1: a design found from targets (N2): only its own targets
+# are checked. Sets EV_OUT to a deny decision, or leaves it empty.
+_ga_bash_eval() { # CMD ROOT OWN
+  local cmd=$1 root=$2 OWN=$3 phase="" body segs seg corrupt=0 where="" DISC=0 OWN_CD=0 CD_CUR
+  local re_internal='(^|[;&|/[:space:]])ga[[:space:]]+(--root[= ][^[:space:]]+[[:space:]]+)?(user-command|hook)([^A-Za-z0-9_-]|$)'
+  EV_OUT=""
+  if [ -z "$root" ] || ga_paused_marker "$root"; then
+    DISC=1
+  elif ! _ga_gate_state "$root"; then
     # R31b: an unreadable state.json keeps read-only work possible (design-phase write rules).
     corrupt=1; GS_PHASE=corrupt; GS_MODE=""; GS_PAUSED=false
   fi
-  if [ "$GS_PAUSED" = true ]; then _ga_gate_out allow ""; return 0; fi
-  phase=$GS_PHASE
-  where="현재 단계 $phase"
-  [ "$corrupt" = 1 ] && where="설계 상태(state.json)를 읽을 수 없는 상태"
+  if [ $DISC = 0 ] && [ "$GS_PAUSED" = true ]; then DISC=1; fi
+  if [ $DISC = 1 ]; then
+    [ "$OWN" = 0 ] || return 0
+    root=/nonexistent/ga-no-design
+  else
+    phase=$GS_PHASE
+    where="현재 단계 $phase"
+    [ "$corrupt" = 1 ] && where="설계 상태(state.json)를 읽을 수 없는 상태"
+    if [ "$OWN" = 1 ]; then case "$NL$CD_ROOTS" in *"$NL$root$NL"*) OWN_CD=1 ;; esac; fi
+  fi
 
   # (a) internal commands and adapter hook scripts are never callable from Bash, in any phase.
-  if [[ $cmd =~ $re_internal ]] || [[ $cmd == *adapters/*/hook.sh* ]]; then
-    _ga_gate_out deny "$where: ga 내부 명령(user-command, hook)과 훅 스크립트는 직접 호출할 수 없습니다. 사용자만 'GA ...' 명령으로 호출합니다"
+  if [ $DISC = 0 ] && [ "$OWN" = 0 ] && { [[ $cmd =~ $re_internal ]] || [[ $cmd == *adapters/*/hook.sh* ]]; }; then
+    _ga_ev_deny "$where: ga 내부 명령(user-command, hook)과 훅 스크립트는 직접 호출할 수 없습니다. 사용자만 'GA ...' 명령으로 호출합니다"
     return 0
   fi
 
@@ -592,8 +882,10 @@ _ga_gate_bash() {
   local T_STATE="" T_PLUGIN="" T_UNRES="" T_GIT="" TL="" ST=$root/docs/architecture/.state PLUG
   local re_cd='(^|[^A-Za-z0-9_./-])(cd|pushd)([^A-Za-z0-9_./-]|$)'
   local -a TG
-  PLUG=$(_ga_plugin_root) || PLUG=""
+  PLUG=""
+  if [ $DISC = 0 ]; then PLUG=$(_ga_plugin_root) || PLUG=""; fi
   [ -n "$PLUG" ] || PLUG=/nonexistent/grounded-arch-plugin-root
+  CD_CUR=$CWDP
   lbody=$(_ga_lc "$body")
   # .state mention is computed over the whole command (assignment-only segments included).
   case "$lbody" in *.state*) mention_any=1 ;; esac
@@ -605,9 +897,10 @@ _ga_gate_bash() {
 $segs
 EOF
   set +f
+  [ $DISC = 0 ] || return 0
 
-  if [ -n "$internal" ]; then
-    _ga_gate_out deny "$where: ga 내부 명령($internal)은 직접 호출할 수 없습니다. 사용자만 'GA ...' 명령으로 호출합니다"
+  if [ "$OWN" = 0 ] && [ -n "$internal" ]; then
+    _ga_ev_deny "$where: ga 내부 명령($internal)은 직접 호출할 수 없습니다. 사용자만 'GA ...' 명령으로 호출합니다"
     return 0
   fi
 
@@ -617,8 +910,8 @@ EOF
   local re_env='(^|[^A-Za-z0-9_])(GA_[A-Za-z0-9_]*|PATH)\+?='
   local re_exp='(^|[^A-Za-z0-9_])(export|declare|typeset|readonly|local)[[:space:]]+(-[A-Za-z]+[[:space:]]+)*(GA_[A-Za-z0-9_]*|PATH)([^A-Za-z0-9_]|$)'
   if [[ $body =~ $re_word_ga ]]; then ga_seen=1; fi
-  if [ "$ga_seen" = 1 ] && { [[ $body =~ $re_env ]] || [[ $body =~ $re_exp ]]; }; then
-    _ga_gate_out deny "$where: ga를 실행하는 명령에서 GA_ 변수나 PATH를 바꿀 수 없습니다 (검증 실행기와 과금 점검을 바꿀 수 있습니다). 변수 없이 ga만 실행하세요"
+  if [ "$OWN" = 0 ] && [ "$ga_seen" = 1 ] && { [[ $body =~ $re_env ]] || [[ $body =~ $re_exp ]]; }; then
+    _ga_ev_deny "$where: ga를 실행하는 명령에서 GA_ 변수나 PATH를 바꿀 수 없습니다 (검증 실행기와 과금 점검을 바꿀 수 있습니다). 변수 없이 ga만 실행하세요"
     return 0
   fi
 
@@ -636,7 +929,7 @@ EOF
     fi
   fi
   if [ -n "$state_hit" ]; then
-    _ga_gate_out deny "$where: 설계 상태(docs/architecture/.state/)나 그 상위 디렉터리를 쓰거나 지우는 명령은 막혀 있습니다 (감지된 패턴: $state_hit). 상태는 ga 명령으로만 바꿉니다. 필요하면 사용자에게 \`GA 일시정지\`를 요청하세요"
+    _ga_ev_deny "$where: 설계 상태(docs/architecture/.state/)나 그 상위 디렉터리를 쓰거나 지우는 명령은 막혀 있습니다 (감지된 패턴: $state_hit). 상태는 ga 명령으로만 바꿉니다. 필요하면 사용자에게 \`GA 일시정지\`를 요청하세요"
     return 0
   fi
 
@@ -646,13 +939,13 @@ EOF
     case "$lbody" in *"$(_ga_lc "$PLUG")"* | *grounded-arch/*) T_PLUGIN=$match ;; esac
   fi
   if [ -n "$T_PLUGIN" ]; then
-    _ga_gate_out deny "$where: 설계가 진행 중인 동안 grounded-arch 플러그인($PLUG)은 고칠 수 없습니다 (감지된 대상: $T_PLUGIN). 필요하면 사용자에게 \`GA 일시정지\`를 요청하세요"
+    _ga_ev_deny "$where: 설계가 진행 중인 동안 grounded-arch 플러그인($PLUG)은 고칠 수 없습니다 (감지된 대상: $T_PLUGIN). 필요하면 사용자에게 \`GA 일시정지\`를 요청하세요"
     return 0
   fi
 
   # R32b: git clean / git stash -u delete untracked files such as .state, in any phase.
-  if [ -n "$T_GIT" ]; then
-    _ga_gate_out deny "$where: $T_GIT 명령은 추적하지 않는 파일(docs/architecture/.state 포함)을 지우므로 설계 중에는 막혀 있습니다. 지울 파일을 직접 지정하거나 사용자에게 \`GA 일시정지\`를 요청하세요"
+  if [ "$OWN" = 0 ] && [ -n "$T_GIT" ]; then
+    _ga_ev_deny "$where: $T_GIT 명령은 추적하지 않는 파일(docs/architecture/.state 포함)을 지우므로 설계 중에는 막혀 있습니다. 지울 파일을 직접 지정하거나 사용자에게 \`GA 일시정지\`를 요청하세요"
     return 0
   fi
 
@@ -661,9 +954,9 @@ EOF
       [ -n "$match" ] || match=$R_BAD
       if [ -n "$match" ]; then
         if [ "$corrupt" = 1 ]; then
-          _ga_gate_out deny "$(_ga_corrupt_reason "$root") 그동안 파일을 쓰는 명령은 막고 읽기 명령만 허용합니다 (감지된 패턴: $match)"
+          _ga_ev_deny "$(_ga_corrupt_reason "$root") 그동안 파일을 쓰는 명령은 막고 읽기 명령만 허용합니다 (감지된 패턴: $match)"
         else
-          _ga_gate_out deny "$where: 설계 승인 전에는 파일을 쓰는 명령을 실행할 수 없습니다 (감지된 패턴: $match). 설계는 docs/architecture/ 안에 기록하거나 사용자에게 \`GA 일시정지\`를 요청하세요"
+          _ga_ev_deny "$where: 설계 승인 전에는 파일을 쓰는 명령을 실행할 수 없습니다 (감지된 패턴: $match). 설계는 docs/architecture/ 안에 기록하거나 사용자에게 \`GA 일시정지\`를 요청하세요"
         fi
         return 0
       fi
@@ -672,7 +965,7 @@ EOF
       # R32c: brownfield skeleton applies the mapping rule of the write gate to shell writes.
       if [ "$GS_MODE" = brownfield ]; then
         if [ -n "$T_UNRES" ]; then
-          _ga_gate_out deny "$where (기존 코드): 쓰는 대상 경로를 확인할 수 없습니다 (감지된 대상: $T_UNRES). 대응표(mapping)의 경로를 그대로 쓰거나 사용자에게 \`GA 일시정지\`를 요청하세요"
+          _ga_ev_deny "$where (기존 코드): 쓰는 대상 경로를 확인할 수 없습니다 (감지된 대상: $T_UNRES). 대응표(mapping)의 경로를 그대로 쓰거나 사용자에게 \`GA 일시정지\`를 요청하세요"
           return 0
         fi
         local c rc
@@ -681,10 +974,10 @@ EOF
           _ga_mapped "$root" "$c"
           rc=$?
           if [ "$rc" = 2 ]; then
-            _ga_gate_out deny "원장(ledger.json)을 읽을 수 없어 대응표를 확인할 수 없습니다. 원장을 고치거나 사용자에게 \`GA 일시정지\`를 요청하세요"
+            _ga_ev_deny "원장(ledger.json)을 읽을 수 없어 대응표를 확인할 수 없습니다. 원장을 고치거나 사용자에게 \`GA 일시정지\`를 요청하세요"
             return 0
           elif [ "$rc" != 0 ]; then
-            _ga_gate_out deny "$where (기존 코드): 대응표(mapping)에서 change가 new 또는 changed로 지정된 경로만 쓸 수 있습니다 (감지된 대상: ${c#"$root"/}). 대응표에 경로를 추가하거나 사용자에게 \`GA 일시정지\`를 요청하세요"
+            _ga_ev_deny "$where (기존 코드): 대응표(mapping)에서 change가 new 또는 changed로 지정된 경로만 쓸 수 있습니다 (감지된 대상: ${c#"$root"/}). 대응표에 경로를 추가하거나 사용자에게 \`GA 일시정지\`를 요청하세요"
             return 0
           fi
         done <<EOF
@@ -693,7 +986,7 @@ EOF
       fi
       ;;
   esac
-  _ga_gate_out allow ""
+  return 0
 }
 
 # --- stop gate ---------------------------------------------------------------
