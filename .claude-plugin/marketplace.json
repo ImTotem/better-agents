@@ -8,6 +8,12 @@
       "source": "./plugins/grounded-arch",
       "description": "근거 기반 아키텍처 설계 하네스",
       "version": "0.1.0"
+    },
+    {
+      "name": "explain-clearly",
+      "source": "./plugins/explain-clearly",
+      "description": "사용자에게 하는 설명을 늘 같은 양식으로 쓰게 하는 훅",
+      "version": "0.1.0"
     }
   ]
 }

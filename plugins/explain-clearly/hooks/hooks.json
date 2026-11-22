@@ -1,0 +1,15 @@
+{
+  "description": "세션 시작(압축 후 포함) 때 설명 양식 전문을, 메시지마다 짧은 알림을 넣는다",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [{"type": "command", "command": "cat \"${CLAUDE_PLUGIN_ROOT}/rules/guide.md\""}]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [{"type": "command", "command": "cat \"${CLAUDE_PLUGIN_ROOT}/rules/reminder.md\""}]
+      }
+    ]
+  }
+}

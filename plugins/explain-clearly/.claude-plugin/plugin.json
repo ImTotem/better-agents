@@ -1,0 +1,7 @@
+{
+  "name": "explain-clearly",
+  "version": "0.1.0",
+  "description": "사용자에게 하는 설명을 늘 같은 양식(결론 먼저, 항목마다 무엇·예·영향, 정할 것과 질문)으로 쓰게 하는 훅",
+  "author": { "name": "sungbin" },
+  "keywords": ["explanation", "communication", "korean"]
+}
