@@ -1,49 +1,68 @@
 # grounded-arch common helpers. Sourced; bash 3.2 compatible. No set -e here.
 
-# --- code outside the OS sandbox (spec 5.5) ------------------------------------------------------
-# Hooks, the MCP server and ga verify run outside the sandbox, so they never run anything the agent
-# can write: PATH keeps only absolute entries outside the project, and jq and git are called by
-# absolute path (/usr/bin first).
+# --- code outside the OS sandbox (spec 5.5, P28) -------------------------------------------------
+# Hooks, the MCP server, the adapter and ga run outside the sandbox. Each entry point starts by saving
+# the caller's PATH as GA_USER_PATH and setting PATH=/usr/bin:/bin:/usr/sbin:/sbin, so every tool ga
+# itself runs (tail, sed, mktemp, sha256sum ...) is a system tool. jq is /usr/bin/jq only; git is the
+# developer tools' own binary (ga_git_resolve). Only the verifier runners, their preflight and the
+# sandboxed build check use the user's PATH (ga_user_path). Nothing in the environment can point ga
+# at other tools outside test mode (GA_TEST_MODE=1).
 
-# Drops empty and relative PATH entries, and entries inside any DIR given (lexical comparison).
-ga_path_harden() { # [DIR...]
-  local out="" e d skip oldifs=$IFS noglob=1
+# The user's PATH (GA_USER_PATH, else PATH) without empty or relative entries and without entries
+# inside any DIR given -- compared as typed and in their one physical spelling (ga_phys_dir), so a
+# symlinked, firmlinked or differently cased entry cannot slip past: the agent can write those.
+ga_user_path() { # [DIR...]
+  local out="" e d p skip oldifs=$IFS noglob=1
+  local -a dirs=() ents=()
+  for d in "$@"; do
+    case "$d" in "" | /) continue ;; esac # / holds everything: never a project
+    dirs+=("${d%/}")
+    p=$(ga_phys_dir "$d" 2>/dev/null) && dirs+=("${p%/}")
+  done
   case $- in *f*) ;; *) noglob=0; set -f ;; esac
   IFS=:
-  for e in $PATH; do
+  for e in ${GA_USER_PATH:-$PATH}; do ents+=("$e"); done
+  IFS=$oldifs
+  [ "$noglob" = 0 ] && set +f
+  for e in ${ents[@]+"${ents[@]}"}; do
     case "$e" in /*) ;; *) continue ;; esac
+    p=""; [ ${#dirs[@]} -eq 0 ] || p=$(ga_phys_dir "$e" 2>/dev/null) || p=""
     skip=0
-    for d in "$@"; do
-      case "$d" in "" | /) continue ;; esac # / holds everything: never a project
-      case "${e%/}/" in "${d%/}"/*) skip=1; break ;; esac
+    for d in ${dirs[@]+"${dirs[@]}"}; do
+      case "${e%/}/" in "$d"/*) skip=1; break ;; esac
+      [ -n "$p" ] || continue
+      case "${p%/}/" in "$d"/*) skip=1; break ;; esac
     done
     [ "$skip" = 1 ] || out=${out:+$out:}$e
   done
-  IFS=$oldifs
-  [ "$noglob" = 0 ] && set +f
-  PATH=$out
-  export PATH
+  printf '%s' "$out"
 }
 
-# Absolute path of tool NAME: /usr/bin/NAME when executable, else the first one on the hardened PATH.
-ga_tool_path() { # NAME
-  local p=/usr/bin/$1
-  [ -x "$p" ] || p=$(type -P "$1" 2>/dev/null) || return 1
-  case "$p" in /*) printf '%s\n' "$p" ;; *) return 1 ;; esac
-}
-
-# Sets GA_JQ and GA_GIT (again after ga_path_harden drops more entries). No fork when /usr/bin has both.
-ga_tools_resolve() {
-  GA_JQ=/usr/bin/jq
-  [ -x "$GA_JQ" ] || GA_JQ=$(ga_tool_path jq) || GA_JQ=/nonexistent/jq
-  # The test suite simulates a missing or broken jq (honored only in test mode).
-  if [ "${GA_TEST_MODE:-}" = 1 ] && [ -n "${GA_TEST_JQ:-}" ]; then GA_JQ=$GA_TEST_JQ; fi
-  GA_GIT=/usr/bin/git
-  [ -x "$GA_GIT" ] || GA_GIT=$(ga_tool_path git) || GA_GIT=/nonexistent/git
-}
+# jq is /usr/bin/jq only (P28); without it the callers' jq-unusable paths apply. The test suite
+# simulates a missing or broken jq (honored only in test mode).
+GA_JQ=/usr/bin/jq
+if [ "${GA_TEST_MODE:-}" = 1 ] && [ -n "${GA_TEST_JQ:-}" ]; then GA_JQ=$GA_TEST_JQ; fi
 jq() { "$GA_JQ" "$@"; }
-ga_path_harden
-ga_tools_resolve
+
+# git is resolved once, on first use, and never from the environment. On macOS /usr/bin/git is the
+# xcrun shim, which reads $TMPDIR/xcrun_db and DEVELOPER_DIR and can run a program from there: the
+# real binary under the selected developer folder is used instead (xcode-select without
+# DEVELOPER_DIR), else the Command Line Tools one. Elsewhere /usr/bin/git. rc 1 when there is none.
+GA_GIT=""
+ga_git_resolve() {
+  local d
+  [ -z "$GA_GIT" ] || { [ -x "$GA_GIT" ]; return; }
+  if [ "${GA_TEST_MODE:-}" = 1 ] && [ -n "${GA_TEST_GIT:-}" ]; then
+    GA_GIT=$GA_TEST_GIT
+  elif [ -x /usr/bin/xcode-select ]; then
+    d=$(/usr/bin/env -u DEVELOPER_DIR /usr/bin/xcode-select -p 2>/dev/null) || d=""
+    case "$d" in /*) GA_GIT=$d/usr/bin/git ;; *) GA_GIT="" ;; esac
+    [ -n "$GA_GIT" ] && [ -x "$GA_GIT" ] || GA_GIT=/Library/Developer/CommandLineTools/usr/bin/git
+  else
+    GA_GIT=/usr/bin/git
+  fi
+  [ -x "$GA_GIT" ]
+}
 
 # The session's directory: the project root the harness gave the hook adapter (GA_SESSION_ROOT, which
 # the agent cannot move with cd), else the current directory (CLI use).
@@ -61,7 +80,7 @@ ga_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 # that contains .git (a directory in a checkout, a file in a worktree or submodule).
 ga_find_root() { # START
   local d
-  d=$(cd -P "$1" 2>/dev/null && pwd -P) || return 1
+  d=$(ga_phys_dir "$1") || return 1
   while :; do
     if [ -f "$d/docs/architecture/.state/state.json" ]; then
       echo "$d"
@@ -83,8 +102,26 @@ ga_need_state() {
 # True when the user's pause marker (GA 일시정지) exists. It works even when state.json is unreadable.
 ga_paused_marker() { [ -e "$1/docs/architecture/.state/PAUSED" ]; } # ROOT
 
+# P31: the one spelling of existing directory D: symlinks resolved, the letter case stored on disk
+# (/bin/realpath; cd -P keeps the typed case), and no /System/Volumes/Data prefix when the path without
+# it is the same folder (same device and inode; macOS firmlinks). Fingerprint keys and every prefix
+# comparison see this spelling.
+ga_phys_dir() { # D
+  local p="" s ids
+  if [ -x /bin/realpath ]; then p=$(/bin/realpath "$1" 2>/dev/null) || p=""; fi
+  case "$p" in /*) [ -d "$p" ] || p="" ;; *) p="" ;; esac
+  [ -n "$p" ] || p=$(cd -P "$1" 2>/dev/null && pwd -P) || return 1
+  case "$p" in
+    /System/Volumes/Data/?*)
+      s=${p#/System/Volumes/Data}
+      ids=$(stat -c '%d:%i' "$p" "$s" 2>/dev/null || stat -f '%d:%i' "$p" "$s" 2>/dev/null) || :
+      case "$ids" in ?*$'\n'?*) if [ "${ids%%$'\n'*}" = "${ids#*$'\n'}" ]; then p=$s; fi ;; esac ;;
+  esac
+  printf '%s\n' "$p"
+}
+
 # Canonical absolute path; the file (and its parent dirs) need not exist.
-# The deepest existing ancestor is resolved with cd -P; the rest is appended.
+# The deepest existing ancestor is resolved with ga_phys_dir; the rest is appended.
 ga_canon() { # PATH
   local p=$1 rest="" base
   case "$p" in /*) ;; *) p=$PWD/$p ;; esac
@@ -94,7 +131,7 @@ ga_canon() { # PATH
     rest=$base${rest:+/$rest}
     p=$(dirname "$p")
   done
-  p=$(cd -P "$p" && pwd -P) || return 1
+  p=$(ga_phys_dir "$p") || return 1
   # The non-existent remainder may contain . and .. (e.g. missing/../.state): collapse
   # them lexically so a path can never hide its real location.
   case "$rest" in

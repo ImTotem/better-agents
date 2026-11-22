@@ -72,6 +72,20 @@ seed_map() { # ROOT PATH CHANGE   (test-only: appends mapping MAP-1 to the ledge
   jq --arg p "$2" --arg c "$3" '.items += [{"id":"MAP-1","kind":"mapping","round":1,"phase_added":"skeleton","iteration":null,"status":null,"resolution":null,"element":"테스트 요소","path":$p,"change":$c}]' "$lp" | seed_ledger "$1" -
 }
 
+# P28: fake copies of the system tools ga uses, in DIR. Each appends its name to MARKER and runs the
+# system tool. A verifier runner and its preflight (GA_IN_RUNNER, GA_RUNNER_RECORD) take their tools
+# from the user's PATH by design, so their calls are not logged.
+fake_tools() { # DIR MARKER
+  local t x s
+  for t in tail head sed awk grep mktemp stat find shasum sha256sum jq git sort tr cut paste cat rm mv mkdir \
+           date dirname basename readlink env pgrep wc xargs uname realpath xcode-select sandbox-exec; do
+    s=""; for x in /usr/bin /bin /usr/sbin /sbin; do [ -x "$x/$t" ] && { s=$x/$t; break; }; done
+    [ -n "$s" ] || continue
+    printf '#!/bin/bash\n[ -n "${GA_IN_RUNNER:-}${GA_RUNNER_RECORD:-}" ] || printf "%%s\\n" %s >>"%s"\nexec %s "$@"\n' "$t" "$2" "$s" >"$1/$t"
+    chmod +x "$1/$t"
+  done
+}
+
 set_state() { # ROOT JQ_EXPR   (test-only: edits state.json directly)
   local sd f tmp; sd=$(_state_dir "$1"); f=$sd/state.json
   [ -f "$f" ] || echo '{"version":1,"mode":"greenfield","phase":"inputs","paused":false,"round":1,"iteration":0,"iteration_count":0,"transcript_path":null}' >"$f"

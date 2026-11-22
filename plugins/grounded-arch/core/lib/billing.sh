@@ -37,32 +37,33 @@ _ga_preflight_path() { # RECFILE
   return 1
 }
 
-# P16: ga verify runs outside the OS sandbox, so a runner command is looked up only in absolute PATH
-# entries outside the project (GA_ROOT): a relative or empty entry, or one inside the project, is
-# agent-writable. Prints the absolute path of the binary COMMAND resolves to (what ga_runner_exec runs).
+# P16/P28: ga verify runs outside the OS sandbox with only system tools on PATH; a runner command is
+# looked up in the user's PATH (GA_USER_PATH), absolute entries outside the project (GA_ROOT) and the
+# session root only: a relative or empty entry, or one inside the project, is agent-writable. Prints
+# the absolute path of the binary COMMAND resolves to (what ga_runner_exec runs; the report keeps it).
 ga_runner_command_path() { # COMMAND
-  local e d rc oldifs=$IFS noglob=1
+  local e d oldifs=$IFS noglob=1 up
+  local -a ins=()
   [ -n "$1" ] || return 1
-  rc=""
-  [ -n "${GA_ROOT:-}" ] && rc=$(cd -P "$GA_ROOT" 2>/dev/null && pwd -P)
+  for d in "${GA_ROOT:-}" "${GA_SESSION_ROOT:-}"; do
+    [ -n "$d" ] && [ "$d" != / ] || continue
+    ins+=("${d%/}"); d=$(ga_phys_dir "$d" 2>/dev/null) && ins+=("${d%/}")
+  done
   case "$1" in
     /*) # an absolute command: used as it is, unless it lies inside the project
       [ -f "$1" ] && [ -x "$1" ] || return 1
-      d=$(cd -P "${1%/*}/" 2>/dev/null && pwd -P) || return 1
-      if [ -n "$rc" ]; then case "$d/" in "$rc"/*) return 1 ;; esac; fi
+      d=$(ga_phys_dir "${1%/*}/" 2>/dev/null) || return 1
+      for e in ${ins[@]+"${ins[@]}"}; do case "$d/" in "$e"/*) return 1 ;; esac; done
       echo "$1"; return 0 ;;
     */*) return 1 ;; # relative to an agent-writable directory
   esac
+  up=$(_ga_runner_path)
   case $- in *f*) ;; *) noglob=0; set -f ;; esac
   IFS=:
-  for e in $PATH; do
-    case "$e" in /*) ;; *) continue ;; esac
+  for e in $up; do
     [ -f "$e/$1" ] && [ -x "$e/$1" ] || continue
-    if [ -n "$rc" ]; then
-      d=$(cd -P "$e" 2>/dev/null && pwd -P) || continue
-      case "$d/" in "$rc"/*) continue ;; esac
-      case "${e%/}/" in "${GA_ROOT%/}"/*) continue ;; esac
-    fi
+    d=$(ga_phys_dir "$e" 2>/dev/null) || continue
+    if [ ${#ins[@]} -gt 0 ] && _ga_in_any "$d" "${ins[@]}"; then continue; fi
     IFS=$oldifs; [ "$noglob" = 0 ] && set +f
     echo "${e%/}/$1"
     return 0
@@ -71,11 +72,16 @@ ga_runner_command_path() { # COMMAND
   return 1
 }
 
-# PATH for a runner or its preflight: absolute entries outside the project only.
-_ga_runner_path() (
-  ga_path_harden "${GA_ROOT:-}" "$( [ -n "${GA_ROOT:-}" ] && cd -P "$GA_ROOT" 2>/dev/null && pwd -P)"
-  printf '%s' "$PATH"
-)
+_ga_in_any() { # DIR PREFIX... -> true when DIR is one of the PREFIXes or below one
+  local d=$1 p
+  shift
+  for p in "$@"; do case "${d%/}/" in "$p"/*) return 0 ;; esac; done
+  return 1
+}
+
+# PATH for a runner or its preflight: the user's PATH, absolute entries outside the project and the
+# session root only.
+_ga_runner_path() { ga_user_path "${GA_ROOT:-}" "${GA_SESSION_ROOT:-}"; }
 
 # Sets GA_STRIP_ARGS=(-u NAME ...) from the record's strip_env. Returns 4 when unusable.
 _ga_strip_args() { # RECFILE

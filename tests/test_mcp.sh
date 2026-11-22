@@ -301,3 +301,15 @@ test_mcp_tools_cannot_clear_effect_violation() {
   out=$(ga --root "$r" effect check 2>/dev/null) || rc=$?
   assert_eq 1 "$rc"; assert_eq '["src/agent.c"]' "$(jq -c .violations <<<"$out")"
 }
+
+# P28 (second fix wave): the MCP server runs outside the sandbox, so it and the ga it starts take their
+# own tools from the system folders only.
+test_p28_server_runs_only_system_tools() {
+  local r d m in out
+  r=$(mk_project); export CLAUDE_PROJECT_DIR=$r GA_HARNESS=claude-code; d=$(mktemp -d); m=$HOME/tools-ran; fake_tools "$d" "$m"
+  in=$(mktemp); printf '%s\n' "$INIT" "$INITD" "$(mcall 1 ga_init '{}')" "$(mcall 2 ga_add "$(add_args assumption "$FIX/asm.json")")" \
+    "$(mcall 3 ga_render '{}')" "$(mcall 4 ga_status '{}')" >"$in"
+  out=$(PATH="$d:$PATH" "$MCP_SERVER" <"$in" 2>/dev/null)
+  [ ! -e "$m" ] || _fail "the MCP server ran tools from the user's PATH: $(sort -u "$m" | tr '\n' ' ')"
+  [ -f "$r/docs/architecture/.state/state.json" ] || _fail "ga_init did not run"
+}

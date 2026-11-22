@@ -69,3 +69,10 @@ test_fp_mismatch_refuses_state_writes() { local r sd c out rc l0
   ga --root "$r" status >/dev/null; ga --root "$r" check >/dev/null
   assert_eq allow "$(dec "$(uc "$r" 'GA 일시정지')")"; assert_eq 1 "$(fpcheck "$r")"
   uc "$r" 'GA 상태승인' >/dev/null; ga --root "$r" add assumption <"$FIX/asm.json" >/dev/null; assert_eq 0 "$(fpcheck "$r")"; }
+
+# --- second fix wave (P31, M4): a project path typed in another letter case is the same record ---
+test_p31_case_variant_root_same_fingerprint_key() { local r u
+  r=$(proj); r=$(cd -P "$r" && pwd -P); u=$(printf '%s' "$r" | tr 'a-z' 'A-Z')
+  [ -d "$u" ] || return 0 # a case-sensitive file system: another spelling is another folder
+  assert_eq "$(fpfile "$r")" "$(fpfile "$u")"; assert_eq 0 "$(fpcheck "$u")"
+  ga --root "$u" add assumption <"$FIX/asm.json" >/dev/null; assert_eq 0 "$(fpcheck "$r")"; }

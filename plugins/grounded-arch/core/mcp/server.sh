@@ -12,10 +12,11 @@
 # (https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/stdio).
 # Requests are served one at a time, in arrival order. bash 3.2 + jq.
 
-# The server runs outside the OS sandbox: nothing external runs before common.sh drops the empty and
-# relative PATH entries (spec 5.5). The sandboxed build check of ga verify gets the PATH as it was.
-GA_BUILD_PATH=$PATH
-export GA_BUILD_PATH
+# The server runs outside the OS sandbox (spec 5.5, P28): it and the ga it starts run only system
+# tools. The caller's PATH is kept as GA_USER_PATH for the verifier runners and the sandboxed build.
+GA_USER_PATH=${GA_USER_PATH:-$PATH}
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export GA_USER_PATH PATH
 _d=${0%/*}
 [ "$_d" = "$0" ] && _d=.
 GA_MCP_CORE=$(cd -P "$_d/.." && pwd) || exit 2
@@ -23,7 +24,6 @@ unset _d
 GA_MCP_GA=$GA_MCP_CORE/bin/ga
 # ga_find_root, ga_canon and GA_VERSION: the root rules must be ga's own.
 . "$GA_MCP_CORE/lib/common.sh" || { echo "ga-mcp: core/lib/common.sh를 읽을 수 없습니다" >&2; exit 2; }
-case "${CLAUDE_PROJECT_DIR:-}" in /*) ga_path_harden "$CLAUDE_PROJECT_DIR"; ga_tools_resolve ;; esac
 GA_MCP_VERSIONS="2025-11-25 2025-06-18 2025-03-26 2024-11-05" # newest first
 GA_MCP_TICK=60 # seconds between progress notifications while a tool runs
 if [ "${GA_TEST_MODE:-}" = 1 ]; then
@@ -34,7 +34,7 @@ if [ "${GA_TEST_MODE:-}" = 1 ]; then
 fi
 GA_MCP_INSTRUCTIONS="grounded-arch 설계 원장과 검증을 다루는 ga 명령 도구다. 각 도구는 같은 이름의 ga 하위 명령을 프로젝트 루트(인자 root, 없으면 CLAUDE_PROJECT_DIR)에서 실행하고 출력과 종료 코드를 돌려준다. 사용자 승인(GA 명령)은 이 서버로 기록할 수 없다."
 
-command -v jq >/dev/null 2>&1 || { echo "ga-mcp: jq가 없어 시작할 수 없습니다" >&2; exit 2; }
+[ -x "$GA_JQ" ] || { echo "ga-mcp: jq(${GA_JQ})가 없어 시작할 수 없습니다" >&2; exit 2; }
 GA_MCP_TMP=$(mktemp -d "${TMPDIR:-/tmp}/ga-mcp.XXXXXX") || { echo "ga-mcp: 임시 디렉터리를 만들 수 없습니다" >&2; exit 2; }
 GA_MCP_MSG=$GA_MCP_TMP/msg.json   # the request being served
 GA_MCP_ARGS=$GA_MCP_TMP/args.json # its tool arguments
