@@ -1,6 +1,6 @@
 ---
 name: design-architecture
-description: 새 프로젝트나 기존 코드베이스의 아키텍처를 ADD 3.0 절차로 위에서 아래로 설계한다. 사용자가 /design-architecture로 직접 호출할 때만 쓴다. 요구사항 정리, 반복 설계, 설계 검토, 코드 뼈대, 구현까지 모든 판단에 근거를 붙이고 ga CLI와 게이트로 단계를 강제한다.
+description: 새 프로젝트나 기존 코드베이스의 아키텍처를 ADD 3.0 절차로 위에서 아래로 설계한다. 사용자가 /design-architecture로 직접 호출할 때만 쓴다. 요구사항 정리, 반복 설계, 설계 검토, 코드 뼈대, 구현까지 모든 판단에 근거를 붙이고 ga MCP 도구와 게이트로 단계를 강제한다.
 disable-model-invocation: true
 ---
 
@@ -8,7 +8,9 @@ disable-model-invocation: true
 
 **다시 읽기:** 단계를 시작할 때마다, 그리고 컨텍스트가 압축된 뒤에는 `ga status`로 현재 단계를 확인하고 `${CLAUDE_SKILL_DIR}/SKILL.md`의 0절, 1절, 현재 단계 절을 Read로 다시 읽는다. 압축 뒤에는 이 문서의 앞부분만 남는다.
 
-코드를 쓰기 전에 아키텍처를 위에서 아래로 설계한다. 단계는 `inputs` → `iterating`(반복 1..N) → `design-review` → `skeleton` → `implement`다. 단계와 원장은 `ga` CLI가 관리하고 훅 게이트가 강제한다. 문서는 `docs/architecture/architecture.md` 하나다. `docs/architecture/.state/`는 `ga`만 쓴다.
+코드를 쓰기 전에 아키텍처를 위에서 아래로 설계한다. 단계는 `inputs` → `iterating`(반복 1..N) → `design-review` → `skeleton` → `implement`다. 문서는 `docs/architecture/architecture.md` 하나다. 원장과 단계는 `docs/architecture/.state/`에 있고 `ga`만 쓴다.
+
+**상태를 바꾸는 일은 MCP 도구로만 한다.** 플러그인의 MCP 서버 `ga`가 도구를 준다. 전체 이름은 `mcp__plugin_grounded-arch_ga__<도구>`이고(예: `mcp__plugin_grounded-arch_ga__ga_add`), 이 문서에서는 `ga_add`처럼 줄여 쓴다. 셸(Bash)은 운영체제 격리 안에서 돌아서 상태 폴더에 쓰지 못한다. 셸에서는 읽기 명령(`ga status`, `ga check`, `ga rule`, `ga effect check`)만 쓴다.
 
 ## 0. 원칙
 
@@ -24,64 +26,66 @@ disable-model-invocation: true
 - 원장에 올리는 것: 아키텍처상 의미 있는 결정, 모든 가정, 모든 질문. 그 밖의 판단은 응답 안에서 근거 종류를 표시한다.
 
 **금지**
-- `skeleton` 전에는 `docs/architecture/` 밖에 쓰지 않는다.
-- `.state/` 아래를 직접 쓰거나 고치거나 지우지 않는다(읽기는 된다). `ga user-command`, `ga gate`, 훅 스크립트를 부르지 않는다.
+- `skeleton` 전에는 `docs/architecture/` 밖의 파일을 바꾸지 않는다. 셸 명령으로 바꾼 것도 턴 종료와 승인 때 걸린다(1절 "결과 확인").
+- `.state/` 아래를 직접 쓰거나 고치거나 지우지 않는다(읽기는 된다). 플러그인 폴더, `.claude/settings*.json`, 상태 지문 저장 위치(`~/.local/state/grounded-arch`)도 고치지 않는다. 쓰기 도구는 거부되고, 셸은 운영체제가 막는다.
+- `ga`의 내부 명령(`user-command`, `gate`)과 훅 스크립트를 부르지 않는다. 셸에서 상태를 바꾸는 `ga` 명령을 실행하지 않는다. 실패하고, 메시지가 같은 일을 하는 MCP 도구 이름을 알려 준다.
 - 사용자의 확인, 답, 승인, 기각, 판정을 대신 기록하거나 "사용자가 확인했다"고 쓰지 않는다. 이것들은 사용자가 `GA`로 시작하는 줄을 직접 입력해야만 기록된다. 대화에서 "네"라고만 하면 기록되지 않으니 해당 줄을 입력해 달라고 요청한다.
 - 승인을 몰아서 받지 않는다. `GA 확인`이나 `GA 답` 줄을 미리 채운 묶음으로 건네지 않는다. 항목마다 근거를 보여 주고 하나씩 묻는다. 승인 줄은 사용자가 검토를 마친 뒤 따로 요청한다.
-- `claude --bare`를 쓰지 않고 API 키(`ANTHROPIC_API_KEY` 등)를 설정하지 않는다. 모델 호출은 구독으로만 한다. `ga`를 실행할 때 `GA_`로 시작하는 변수나 `PATH`를 바꾸지 않는다(거부된다).
+- `claude --bare`를 쓰지 않고 API 키(`ANTHROPIC_API_KEY` 등)를 설정하지 않는다. 모델 호출은 구독으로만 한다.
 - 게이트가 `state.json`을 읽을 수 없다고 하면 고치려 하지 말고 사용자에게 알린다. 사용자가 `GA 일시정지`를 입력하거나 `state.json`을 고치거나 복원해야 풀린다.
 - superpowers의 brainstorming 같은 다른 기획 스킬을 부르지 않는다. 요구사항 정리는 `inputs` 단계가 맡는다.
-- `ga`의 거부, 게이트 차단, 승인 거부 메시지는 빠진 것을 나열한다. 그것을 채우고 우회하지 않는다. 설계와 관계없는 작은 수정이 필요하면 `GA 일시정지`를 요청하고, 끝나면 `GA 재개`를 요청한다.
+- 도구의 거부, 게이트 차단, 승인 거부 메시지는 빠진 것을 나열한다. 그것을 채우고 우회하지 않는다. 설계와 관계없는 작은 수정이 필요하면 `GA 일시정지`를 요청하고, 끝나면 `GA 재개`를 요청한다.
 
 ## 1. 시작
 
-1. 프로젝트 루트에서 `ga status`를 실행한다. `ga` 명령은 모두 프로젝트 루트나 그 아래에서 실행한다. `command -v ga`가 실패하면 `"${CLAUDE_PLUGIN_ROOT}/bin/ga"`를 쓴다.
-2. "초기화된 프로젝트가 없습니다"(종료 2)면 `ga init`을 실행한다. 출력된 모드와 근거를 보고하고, 2절로 가기 전에 사용자에게 모드가 맞는지 명시적으로 확인받는다. 종료 3(홈 디렉터리나 `/`, 또는 같은 저장소의 상위 디렉터리에 이미 설계가 있음)이면 메시지를 사용자에게 보여 주고 어디서 설계할지 묻는다.
+1. 프로젝트 루트에서 `ga status`를 실행한다(셸). `command -v ga`가 실패하면 `"${CLAUDE_PLUGIN_ROOT}/bin/ga" status`를 쓴다.
+2. "초기화된 프로젝트가 없습니다"(종료 2)면 `ga_init`을 부른다(인자 없음). 출력된 모드와 근거, 격리 설정 경로를 보고하고, 2절로 가기 전에 사용자에게 모드가 맞는지 명시적으로 확인받는다. 종료 3(홈 디렉터리나 `/`, 같은 저장소의 상위 디렉터리에 이미 설계가 있음, 심볼릭 링크 폴더)이면 메시지를 사용자에게 보여 주고 어디서 설계할지 묻는다.
    - `greenfield`(새 프로젝트)는 뼈대 단계의 대응표 쓰기 제한과 빌드 확인이 꺼진다. `brownfield`(기존 코드)는 둘 다 켜진다.
-   - 모드가 틀렸으면 사용자에게 `docs/architecture/.state/`를 직접 지워 달라고 한 뒤 `ga init --mode greenfield` 또는 `ga init --mode brownfield`를 실행한다.
+   - 모드가 틀렸으면 사용자에게 `docs/architecture/.state/`를 직접 지워 달라고 한 뒤 `ga_init`을 `{"mode":"greenfield"}`나 `{"mode":"brownfield"}`로 부른다.
 3. 이미 초기화되어 있으면 architecture.md를 읽고 출력된 단계부터 이어 간다. `일시정지: true`면 먼저 `GA 재개`를 요청한다.
+
+### 격리와 결과 확인
+
+- 설계가 진행 중이면 셸 명령은 운영체제 격리(Claude Code의 `sandbox` 설정, `ga_init`이 `.claude/settings.local.json`에 쓴다) 안에서만 돈다. 셸이 막혀 "격리가 꺼져 있어 막습니다"라고 나오면 `ga_enforce`를 부르고 다시 실행한다. 그래도 막히면 이유를 사용자에게 보여 주고 `GA 일시정지`를 요청한다.
+- 턴이 끝날 때와 승인 직전에 `ga`가 실제로 바뀐 파일을 본다. 기준은 단계가 시작된 때(초기화, 승인, `GA 되돌리기`, `GA 새라운드`)의 파일 상태다. 지금 단계에서 바뀌면 안 되는 파일이 바뀌었으면 턴 종료와 승인이 막히고 파일 목록이 나온다.
+  - `inputs`, `iterating`, `design-review`: `docs/architecture/` 아래(상태 폴더 제외)만 바뀔 수 있다.
+  - `skeleton`(기존 코드): 위에 더해 대응표에서 `new`나 `changed`인 경로. 새 프로젝트의 `skeleton`과 `implement`는 제한이 없다(상태 폴더, 플러그인 폴더, `.claude` 설정 제외).
+  - 내가 바꾼 파일이면 되돌린다(예: `git checkout -- 경로`, 만든 파일 삭제). 사용자가 직접 바꾼 파일이면 되돌리지 말고 목록을 보여 주며 어떻게 할지 묻는다. 미리 보려면 `ga effect check`를 실행한다.
+- `ga`는 상태 폴더를 쓸 때마다 상태 지문을 프로젝트 밖에 기록한다. 상태 폴더가 `ga` 밖에서 바뀌면 지문이 어긋나고, 사용자가 확인할 때까지 상태를 바꾸는 도구, 쓰기, 승인이 막힌다. 이것은 내가 풀 수 없다. 사용자에게 알리고, 사용자가 바뀐 내용을 확인한 뒤 `GA 상태승인`을 입력해 달라고 한다(지금 상태가 새 기준이 된다).
 
 ### 기록 방법
 
-- 추가: `ga add <kind> <<'EOF'` 다음에 JSON 객체 하나, 마지막 줄 `EOF`. 출력은 새 ID다. JSON 파일을 만들지 않는다.
-- 거부(종료 3)되면 stderr의 이유대로 고쳐 다시 실행한다.
+- 추가: `ga_add`에 `{"kind": 종류, "item": 항목 JSON 객체}`를 준다. 종류는 driver, constraint, fact, decision, assumption, question, mapping. 출력은 새 ID다. 규칙 위반이면 오류(종료 3)와 이유가 나온다. 이유대로 고쳐 다시 부른다.
 - `id`, `kind`, `round`, `phase_added`, `status`, `resolution`은 `ga`가 채운다. 드라이버가 아닌 항목의 `iteration`도 현재 반복으로 채운다.
-- 수정: `ga update ID <<'EOF'` 다음에 바꿀 최상위 필드만 담은 JSON. 객체(`scenario` 등)는 통째로 다시 준다. `id`, `kind`, `status`, `resolution`, `resolution_history`, `round`, `phase_added`, `answer`, `deviation`은 못 바꾼다. 항목은 지울 수 없다.
+- 수정: `ga_update`에 `{"id": "DRV-2", "patch": 바꿀 최상위 필드만 담은 객체}`를 준다. 객체(`scenario` 등)는 통째로 다시 준다. `id`, `kind`, `status`, `resolution`, `resolution_history`, `round`, `phase_added`, `answer`, `deviation`은 못 바꾼다. 항목은 지울 수 없다.
 - 이미 해결된 항목(사용자 확인, 답, 근거 해결, 확인된 이탈)의 내용을 고치면 그 항목은 다시 `open`이 된다. 이전 해결과 답은 `resolution_history`에 남는다. 출력된 안내대로 사용자에게 다시 확인이나 답을 받는다.
-- 직접 근거로 가정이나 질문을 해결: `ga resolve ASM-n --source-type code --ref src/a.ts:12`. 타입은 `code`, `literature`, `measurement`. 결정(이탈 포함)에는 못 쓴다. 근거 해결은 검증 패널이 그 근거를 다시 확인하므로 보고서를 낡게 만든다.
-- architecture.md의 1절(목적)과 5절(반복별 설계)은 직접 쓴다. `<!-- ga:begin … -->`~`<!-- ga:end … -->` 사이는 `ga render`가 덮어쓰므로 손대지 않는다. 표시 줄도 지우거나 옮기지 않는다. 표시가 한 쌍씩 맞지 않으면 `ga render`가 거부하고(종료 3) `ga check`가 `E_MARKERS`를 낸다.
-- Bash 인자에 `>`나 `<`를 넣지 않는다. 설계 단계의 게이트가 쓰기로 오판한다. 긴 글은 heredoc으로 넘긴다. `EOF` 줄은 들여 쓰지 않는다.
-
-```bash
-ga dispute FND-1 --evidence "$(cat <<'EOF'
-지적은 DRV-2의 기준을 p95 > 2초로 읽었지만, 원장의 measure는 "p95 응답 시간 2초 이하"다.
-EOF
-)"
-```
+- 직접 근거로 가정이나 질문을 해결: `ga_resolve`에 `{"id":"ASM-n","source_type":"code","ref":"src/a.ts:12"}`. 타입은 `code`, `literature`, `measurement`. 결정(이탈 포함)에는 못 쓴다. 근거 해결은 검증 패널이 그 근거를 다시 확인하므로 보고서를 낡게 만든다.
+- architecture.md의 1절(목적)과 5절(반복별 설계)은 Write나 Edit로 직접 쓴다. `<!-- ga:begin … -->`~`<!-- ga:end … -->` 사이는 `ga_render`가 덮어쓰므로 손대지 않는다. 표시 줄도 지우거나 옮기지 않는다. 표시가 한 쌍씩 맞지 않으면 `ga_render`가 거부하고(종료 3) `ga check`가 `E_MARKERS`를 낸다.
+- 도구가 실패하면 결과가 오류로 표시되고 출력 끝에 `(ga 종료 코드 N)`이 붙는다.
 
 ### 검증과 승인 절차 (모든 승인 지점에서 같다)
 
-1. `ga render`로 원장을 문서에 반영하고, `ga check`로 원장 전체를 검사해 오류를 고친다(예: 결정의 `drivers`에 원장에 없는 DRV ID). 형식 오류가 남으면 턴 종료가 막힌다.
-2. `ga verify`로 여러 모델의 검증 패널을 돌린다. 수십 분까지 걸리므로 Bash의 `run_in_background`로 실행하고 끝날 때까지 기다린다.
+1. `ga_render`로 원장을 문서에 반영하고, `ga check`(셸)로 원장 전체를 검사해 오류를 고친다(예: 결정의 `drivers`에 원장에 없는 DRV ID). 형식 오류가 남으면 턴 종료가 막힌다.
+2. `ga_verify`로 여러 모델의 검증 패널을 돌린다. 15분까지 걸린다. 2분이 지나면 Claude Code가 백그라운드 작업으로 돌리므로 끝날 때까지 기다린다.
    - 종료 5(일부 모델 실패): 최대 두 번 다시 실행한다. 그래도 실패하면 사용자에게 알린다.
-   - 종료 4(과금 점검 실패)나 2(설정·내부 오류): 다시 실행하지 않는다. `ga billing check claude` 출력이나 오류를 사용자에게 바로 알린다.
+   - 종료 4(과금 점검 실패)나 2(설정·내부 오류): 다시 실행하지 않는다. `ga billing check claude`(셸) 출력이나 오류를 사용자에게 바로 알린다.
 3. 지적을 읽는다: `jq .findings docs/architecture/.state/report.json`. 지적마다 하나로 처리한다.
-   - 맞으면 고친다(`ga update`, `ga resolve`, 문서 수정). 고친 지적도 그 보고서에는 남으므로, 다 고친 뒤 1로 돌아가 새 보고서를 받는다. 지적 번호는 보고서마다 새로 매겨진다.
-   - 틀렸다고 보면 `ga dispute`로 증거를 붙여 반박하고(위 예), 사용자에게 지적과 반박을 보여 준 뒤 `GA 판정 FND-n 반박인정` 또는 `GA 판정 FND-n 반박기각` 입력을 요청한다. 반박이 기각되면 고치고 1로 돌아간다.
+   - 맞으면 고친다(`ga_update`, `ga_resolve`, 문서 수정). 고친 지적도 그 보고서에는 남으므로, 다 고친 뒤 1로 돌아가 새 보고서를 받는다. 지적 번호는 보고서마다 새로 매겨진다.
+   - 틀렸다고 보면 `ga_dispute`에 `{"id":"FND-1","evidence":"지적은 DRV-2의 기준을 p95 > 2초로 읽었지만, 원장의 measure는 \"p95 응답 시간 2초 이하\"다"}`처럼 증거를 붙여 반박하고, 사용자에게 지적과 반박을 보여 준 뒤 `GA 판정 FND-n 반박인정` 또는 `GA 판정 FND-n 반박기각` 입력을 요청한다. 반박이 기각되면 고치고 1로 돌아간다.
    - 사용자에게는 지적과 그 증거를 있는 그대로 보여 준다. 지적을 넘기려고 `GA 기각`을 권하지 않는다. 기각은 사용자가 스스로 정한다(`GA 기각 FND-n 사유`).
-4. 열린 가정과 질문을 해결한다. 직접 근거를 찾았으면 `ga resolve`로 해결하고, 다 해결한 뒤 1로 돌아간다. 아니면 하나씩 요청한다.
-   - 가정: 내용, 간접 근거, 탐색 기록, 다른 가능한 가정을 보여 주고 `GA 확인 ASM-n`을 요청한다. 사용자가 틀렸다고 하면 그 말대로 `ga update`로 고치고 다시 요청한다.
+4. 열린 가정과 질문을 해결한다. 직접 근거를 찾았으면 `ga_resolve`로 해결하고, 다 해결한 뒤 1로 돌아간다. 아니면 하나씩 요청한다.
+   - 가정: 내용, 간접 근거, 탐색 기록, 다른 가능한 가정을 보여 주고 `GA 확인 ASM-n`을 요청한다. 사용자가 틀렸다고 하면 그 말대로 `ga_update`로 고치고 다시 요청한다.
    - 질문: `GA 답 Q-n 답변`을 요청한다. 답 때문에 원장이나 문서를 고쳤다면 1로 돌아간다. 확인과 답만으로는 보고서가 낡지 않는다.
-5. `ga status --json`에서 `open`과 `asked`가 0, `report_fresh`와 `panel_ok`가 true, `findings_unprocessed`가 0인지 확인한다. 그다음 승인 줄 하나만 요청한다(예: `GA 승인 입력`). 뒤에 글자를 붙이면 거부된다.
+5. `ga status --json`에서 `open`과 `asked`가 0, `report_fresh`와 `panel_ok`가 true, `findings_unprocessed`가 0인지, `ga effect check`에 위반이 없는지 확인한다. 그다음 승인 줄 하나만 요청한다(예: `GA 승인 입력`). 뒤에 글자를 붙이면 거부된다.
 6. `GA` 줄이 성공하면 그 턴의 컨텍스트에 `기록됨: …`과 `다음: …`이 들어온다. 실패하면 메시지 전체가 막히고 아무것도 바뀌지 않으며, 이유는 사용자 화면에만 보인다. 사용자에게 이유를 물어보고 `ga status`로 확인한다.
 
-승인은 현재 단계, 라운드, 반복의 최신 검증 보고서가 있을 때만 된다. 승인 조건은 **현재 라운드의 항목만** 센다. 단, 해결되지 않은 가정과 질문은 모든 라운드에서 승인을 막는다. `ga status`의 `open`과 `asked`도 같은 기준(모든 라운드의 가정·질문과 현재 라운드의 나머지 항목)으로 센다.
+승인은 현재 단계, 라운드, 반복의 최신 검증 보고서가 있고, 바뀌면 안 되는 파일이 바뀌지 않았고, 상태 지문이 맞을 때만 된다. 승인 조건은 **현재 라운드의 항목만** 센다. 단, 해결되지 않은 가정과 질문은 모든 라운드에서 승인을 막는다. `ga status`의 `open`과 `asked`도 같은 기준(모든 라운드의 가정·질문과 현재 라운드의 나머지 항목)으로 센다.
 
 ## 2. `inputs` 단계 (ADD 1단계: 설계 입력)
 
 "무엇을, 왜"만 다룬다. 기술, 프레임워크, 모듈 구조, 패턴을 고르거나 제안하지 않는다. 사용자가 이미 정한 기술이나 구조는 `constraint`(출처는 사용자 발언)로 기록한다. 이 단계에서는 `decision`을 기록할 수 없다.
 
-대화로 아래를 정리하며, 확인된 것마다 바로 `ga add`로 기록한다. 한 번에 많이 묻지 않는다.
+대화로 아래를 정리하며, 확인된 것마다 바로 `ga_add`로 기록한다. 한 번에 많이 묻지 않는다.
 
 1. **설계 목적**(`driver_type: purpose`): 무엇을 왜 만드는지와 범위. 1개 이상. architecture.md 1절에도 쓴다.
 2. **기능**(`functional`): 현재 기능은 `horizon: current`. 미래 기능은 사용자가 말한 로드맵만 `horizon: future` 드라이버로 둔다. 문헌상 흔한 확장은 `assumption`(`literature_norm`)으로 두고, 근거 없는 기능은 넣지 않는다.
@@ -94,51 +98,41 @@ EOF
 
 **기존 코드 모드:** 모듈, 의존 관계, 진입점, 이미 들어 있는 설계 결정, 빌드·테스트 방법을 읽는다. 코드로 확인한 것은 `fact`(출처 `code`, 실제로 있는 `경로:줄`)로 기록한다. 코드만 보고 짐작한 의도는 `assumption`(`code_convention`)으로 기록한다. 예: "이 계층 분리는 테스트를 위한 것으로 보인다."
 
-**질문:** `ga add question` 후 `ga ask Q-n`을 실행한다. 사용자에게 질문, 탐색 기록, 답에 따라 바뀌는 것을 보여 주고 `GA 답 Q-n 답변`으로 답해 달라고 한다. 답에서 나온 드라이버나 제약은 `ga add`로 기록한다(출처 `user`, `quote`는 사용자 원문).
+**질문:** `ga_add`(kind `question`) 후 `ga_ask`에 `{"id":"Q-n"}`을 준다. 사용자에게 질문, 탐색 기록, 답에 따라 바뀌는 것을 보여 주고 `GA 답 Q-n 답변`으로 답해 달라고 한다. 답에서 나온 드라이버나 제약은 `ga_add`로 기록한다(출처 `user`, `quote`는 사용자 원문).
 
-**예시** (값은 예시다. `purpose`와 `functional` 드라이버는 `scenario`만 빼면 같은 모양이다.)
+**예시: `ga_add` 인자** (값은 예시다. `purpose`와 `functional` 드라이버는 `scenario`만 빼면 같은 모양이다.)
 
-```bash
-ga add driver <<'EOF'
-{"driver_type":"quality","statement":"성능: 판매 개시 직후 좌석 조회","horizon":"current","priority":"high","iteration":1,
+```json
+{"kind":"driver","item":{"driver_type":"quality","statement":"성능: 판매 개시 직후 좌석 조회","horizon":"current","priority":"high","iteration":1,
  "scenario":{"stimulus":"정상 운영 중 판매 개시 후 1분 동안 사용자 5,000명이 좌석 현황을 조회한다","response":"남은 좌석 목록을 돌려준다","measure":"p95 응답 시간 2초 이하"},
- "source":{"type":"user","ref":"대화","quote":"오픈 직후 5천 명이 몰려도 2초 안에 좌석이 떠야 해요"}}
-EOF
+ "source":{"type":"user","ref":"대화","quote":"오픈 직후 5천 명이 몰려도 2초 안에 좌석이 떠야 해요"}}}
 ```
 
-```bash
-ga add constraint <<'EOF'
-{"statement":"DB는 PostgreSQL을 쓴다","source":{"type":"user","ref":"대화","quote":"DB는 회사 표준인 PostgreSQL이어야 해요"}}
-EOF
+```json
+{"kind":"constraint","item":{"statement":"DB는 PostgreSQL을 쓴다","source":{"type":"user","ref":"대화","quote":"DB는 회사 표준인 PostgreSQL이어야 해요"}}}
 ```
 
-```bash
-ga add fact <<'EOF'
-{"statement":"HTTP 라우트는 src/server.ts 한 곳에서 모두 등록한다","source":{"type":"code","ref":"src/server.ts:12"}}
-EOF
+```json
+{"kind":"fact","item":{"statement":"HTTP 라우트는 src/server.ts 한 곳에서 모두 등록한다","source":{"type":"code","ref":"src/server.ts:12"}}}
 ```
 
-```bash
-ga add assumption <<'EOF'
-{"statement":"좌석 조회 트래픽은 판매 개시 후 10분 안에 대부분 몰린다",
+```json
+{"kind":"assumption","item":{"statement":"좌석 조회 트래픽은 판매 개시 후 10분 안에 대부분 몰린다",
  "indirect_evidence":[{"type":"goal_inference","ref":"DRV-2의 사용자 발언 '오픈 직후 5천 명이 몰려도'"}],
  "search_log":{"code":"해당 없음: 새 프로젝트라 코드가 없다",
    "docs":"README.md, CLAUDE.md, docs/, 메모리 디렉터리 확인: 트래픽 지속 시간 언급 없음",
    "conversation":"사용자는 오픈 직후 집중만 말했고 지속 시간은 말하지 않았다",
    "web":"해당 없음: 이 서비스 고유의 트래픽 패턴이라 일반 문헌으로 정할 수 없다"},
- "alternatives":[{"assumption":"하루 내내 고르게 분산된다","reason":"사용자가 오픈 직후 집중을 명시했다"}]}
-EOF
+ "alternatives":[{"assumption":"하루 내내 고르게 분산된다","reason":"사용자가 오픈 직후 집중을 명시했다"}]}}
 ```
 
-```bash
-ga add question <<'EOF'
-{"question":"결제가 끝나지 않은 좌석은 몇 분 동안 다른 사람이 못 사게 잡아 둬야 하나요?",
+```json
+{"kind":"question","item":{"question":"결제가 끝나지 않은 좌석은 몇 분 동안 다른 사람이 못 사게 잡아 둬야 하나요?",
  "search_log":{"code":"해당 없음: 새 프로젝트라 코드가 없다",
    "docs":"README.md, CLAUDE.md, docs/, 메모리 디렉터리 확인: 좌석 점유 정책 없음",
    "conversation":"점유 시간 언급 없음",
    "web":"'ticket seat hold timeout' 검색: 서비스마다 정책이 달라 이 서비스의 값을 정할 근거가 없다"},
- "impact":"좌석 점유 시간 요구사항과 동시 예매 시나리오의 측정 기준이 달라진다"}
-EOF
+ "impact":"좌석 점유 시간 요구사항과 동시 예매 시나리오의 측정 기준이 달라진다"}}
 ```
 
 1절 절차를 거쳐 `GA 승인 입력`을 요청한다. 승인 조건(현재 라운드): 결정 0개, `purpose` 드라이버 1개 이상, `high` 드라이버 1개 이상이고 반복 번호가 1..N으로 이어짐. 승인되면 반복 1이 시작된다.
@@ -149,7 +143,7 @@ EOF
 
 1. **반복 목표**(ADD 2): 다룰 드라이버 ID와 목표 한 줄.
 2. **세분화할 요소**(ADD 3): 첫 반복은 시스템 전체. 이후는 앞 반복에서 정의한 요소 중 이번 드라이버와 관련된 것.
-3. **설계 개념 비교와 결정**(ADD 4): 요소마다 실제로 성립하는 후보(참조 아키텍처, 패턴, 전술, 프레임워크, 외부 컴포넌트)를 **두 개 이상** 놓는다. 연결된 드라이버의 시나리오와 측정 기준에 비추어 비교한다. 후보의 근거도 찾는다. 고른 것을 `ga add decision`으로 기록한다.
+3. **설계 개념 비교와 결정**(ADD 4): 요소마다 실제로 성립하는 후보(참조 아키텍처, 패턴, 전술, 프레임워크, 외부 컴포넌트)를 **두 개 이상** 놓는다. 연결된 드라이버의 시나리오와 측정 기준에 비추어 비교한다. 후보의 근거도 찾는다. 고른 것을 `ga_add`(kind `decision`)로 기록한다.
    - `choice`: 고른 것. `rationale`: 출처 1개 이상. `drivers`: 다루는 DRV ID 1개 이상.
    - `alternatives`: 버린 후보와 이유. 이유는 어떤 드라이버의 어떤 시나리오를 왜 못 맞추는지로 쓴다. 허수아비 대안은 검증에서 반려된다.
    - 사용자 제약 때문에 대안이 없으면 `[{"none":"user_constraint","source":{"type":"user","ref":"대화","quote":"사용자 원문"}}]`로 쓴다.
@@ -159,74 +153,74 @@ EOF
 6. **드라이버 분석**(ADD 7): 이번 드라이버와 영향받은 드라이버마다 `충족`, `부분`, `미충족`과 근거(DEC-n, 측정 기준과의 관계)를 표로 쓴다. 부분이나 미충족이면 이유와 다룰 반복을 적는다.
 7. **검증과 승인**: 1절 절차 후 `GA 승인 반복`을 요청한다. 승인 조건(현재 라운드): 이번 반복의 결정 1개 이상, 이번 반복의 `high` 드라이버가 모두 이번 반복 결정의 `drivers`에 있음. 마지막 반복이 승인되면 `design-review`로 넘어간다.
 
-```bash
-ga add decision <<'EOF'
-{"element":"좌석 조회 경로","choice":"캐시 어사이드(cache-aside) 읽기 캐시를 둔다",
+```json
+{"kind":"decision","item":{"element":"좌석 조회 경로","choice":"캐시 어사이드(cache-aside) 읽기 캐시를 둔다",
  "rationale":[{"type":"literature","ref":"https://learn.microsoft.com/en-us/azure/architecture/patterns/cache-aside"},
               {"type":"user","ref":"대화","quote":"오픈 직후 5천 명이 몰려도 2초 안에 좌석이 떠야 해요"}],
  "alternatives":[{"option":"DB 직접 조회와 인덱스","reason":"DRV-2 시나리오(1분에 5,000명이 같은 공연 좌석 조회)의 모든 요청이 DB로 가므로, 반복 조회를 캐시가 받는 안보다 p95 2초를 맞추기 어렵다"},
                  {"option":"좌석 현황을 모든 클라이언트에 주기적으로 푸시","reason":"DRV-2는 조회 응답 시간을 요구하는데, 푸시는 좌석이 바뀔 때마다 접속자 5,000명 모두에게 보내야 해 같은 부하에서 송신량이 더 크다"}],
- "drivers":["DRV-2"]}
-EOF
+ "drivers":["DRV-2"]}}
 ```
 
-설계 중 새로 생긴 가정과 질문도 0절 규칙대로 기록한다. 새로 알게 된 드라이버는 `ga add driver`로 추가하고, `high`면 현재나 남은 반복 번호를 준다.
+설계 중 새로 생긴 가정과 질문도 0절 규칙대로 기록한다. 새로 알게 된 드라이버는 `ga_add`(kind `driver`)로 추가하고, `high`면 현재나 남은 반복 번호를 준다.
 
 ## 4. `design-review` 단계
 
 1. architecture.md 전체를 다시 읽는다. 결정끼리 모순이 없는지, 현재 라운드의 모든 `high` 드라이버가 결정에 연결됐는지, 드라이버 분석이 최신인지, 부분·미충족 드라이버를 어떻게 처리할지 확인한다.
 2. 사용자에게 구조도, 핵심 결정, 부분·미충족 드라이버를 요약해 보여 주고 검토를 받는다.
-3. 반복이 더 필요하면 `GA 되돌리기`를 요청한다. 반복이 하나 추가되고 `iterating`으로 돌아간다. 새 반복에서 다룰 드라이버는 `ga update DRV-n`으로 `"priority":"high"`와 새 반복 번호(`ga status`의 현재 반복)로 바꾸고 3절을 따른다.
+3. 반복이 더 필요하면 `GA 되돌리기`를 요청한다. 반복이 하나 추가되고 `iterating`으로 돌아간다. 새 반복에서 다룰 드라이버는 `ga_update`로 `"priority":"high"`와 새 반복 번호(`ga status`의 현재 반복)로 바꾸고 3절을 따른다.
 4. 1절 절차 후 `GA 승인 설계`를 요청한다. 승인 조건: 현재 라운드의 모든 `high` 드라이버가 어떤 결정에 연결되어 있다.
 
 ## 5. `skeleton` 단계
 
 구조만 만들고 동작은 만들지 않는다.
 
-1. **대응표 먼저:** `ga add mapping`으로 설계 요소(`element`, 5절의 이름)와 위치(`path`, 루트 기준 상대 경로)를 잇고 `change`를 `new`, `changed`, `kept` 중 하나로 쓴다.
+1. **대응표 먼저:** `ga_add`(kind `mapping`)로 설계 요소(`element`, 5절의 이름)와 위치(`path`, 루트 기준 상대 경로)를 잇고 `change`를 `new`, `changed`, `kept` 중 하나로 쓴다. 예: `{"kind":"mapping","item":{"element":"좌석 조회 서비스","path":"src/seat/query.ts","change":"new"}}`
    - 새 프로젝트: 요소마다 코드 위치(파일이나 디렉터리)를 기록한다.
-   - 기존 코드: 만들거나 바꿀 **파일마다** 기록한다. `new`나 `changed`로 기록한 파일만 쓸 수 있고 게이트는 경로가 정확히 같은지 본다. 바꾸지 않는 관련 요소는 `kept`로 둔다.
+   - 기존 코드: 만들거나 바꿀 **파일마다** 기록한다. `new`나 `changed`로 기록한 파일만 쓸 수 있고 게이트는 경로가 정확히 같은지 본다. 셸로 바꾼 파일도 결과 확인에서 같은 기준으로 걸린다. 바꾸지 않는 관련 요소는 `kept`로 둔다.
 2. **뼈대:** 폴더, 모듈, 인터페이스와 타입, 빈 함수를 만든다. 함수 본문에는 미구현 표시만 둔다(예: `throw new Error("not implemented")`, `raise NotImplementedError`). 로직은 쓰지 않는다.
 3. **기존 코드 모드**
-   - 새로 생기거나 바뀌는 모듈과 인터페이스만 만든다. 기존 코드를 옮기거나 이름을 바꾸면 따로 `ga add decision`으로 기록한다.
-   - 기존 빌드와 테스트가 계속 통과해야 한다. 빌드·테스트 명령을 찾아(예: `package.json`의 scripts, `Makefile`) 찾은 위치와 함께 제안하고, `GA 테스트명령 명령` 형식으로 지정해 달라고 요청한다(예: `GA 테스트명령 npm test`). `ga verify`가 이 명령을 실행해 보고서에 넣는다. 실패하면 뼈대를 고치고 다시 검증한다.
-
-```bash
-ga add mapping <<'EOF'
-{"element":"좌석 조회 서비스","path":"src/seat/query.ts","change":"new"}
-EOF
-```
-
+   - 새로 생기거나 바뀌는 모듈과 인터페이스만 만든다. 기존 코드를 옮기거나 이름을 바꾸면 따로 결정(`ga_add`, kind `decision`)으로 기록한다.
+   - 기존 빌드와 테스트가 계속 통과해야 한다. 빌드·테스트 명령을 찾아(예: `package.json`의 scripts, `Makefile`) 찾은 위치와 함께 제안하고, `GA 테스트명령 명령` 형식으로 지정해 달라고 요청한다(예: `GA 테스트명령 npm test`). `ga_verify`가 이 명령을 실행해 보고서에 넣는다. 실패하면 뼈대를 고치고 다시 검증한다.
 4. 1절 절차 후 `GA 승인 뼈대`를 요청한다. 기존 코드 모드의 승인 조건(현재 라운드): 대응표 1개 이상, 빌드 확인 통과(`ga status --json`의 `build_ok`가 true).
 
 ## 6. `implement` 단계
 
-게이트가 쓰기를 막지 않는다. 설계 문서와 대응표대로 세부 로직을 구현한다.
+게이트가 프로젝트 파일 쓰기를 막지 않는다(상태 폴더, 플러그인 폴더, `.claude` 설정은 계속 막힌다). 설계 문서와 대응표대로 세부 로직을 구현한다.
 
-- 대응표에 없는 새 요소나 위치가 생기면 쓰기 전에 `ga add mapping`으로 기록한다.
-- **설계에서 벗어날 때:** 그 코드를 쓰기 전에 `ga add decision`에 `"deviation": true`를 넣어 기록한다(근거, 버린 대안, 드라이버 포함). architecture.md를 고치고 `ga render`를 실행한다.
+- 대응표에 없는 새 요소나 위치가 생기면 쓰기 전에 `ga_add`(kind `mapping`)로 기록한다.
+- **설계에서 벗어날 때:** 그 코드를 쓰기 전에 결정을 `"deviation": true`를 넣어 `ga_add`로 기록한다(근거, 버린 대안, 드라이버 포함). architecture.md를 고치고 `ga_render`를 부른다.
   - 사용자가 확인하기 전까지 문서에 "미승인 이탈"로 보인다. 이탈 내용과 이유를 보여 주고 `GA 확인 DEC-n`을 요청한다.
-  - 이탈 결정에는 `ga resolve`를 쓰지 않는다(거부된다). 이탈 승인은 사용자의 `GA 확인 DEC-n`으로만 기록된다.
+  - 이탈 결정에는 `ga_resolve`를 쓰지 않는다(거부된다). 이탈 승인은 사용자의 `GA 확인 DEC-n`으로만 기록된다.
 - **새 기능이 들어오면:** 미승인 이탈과 해결되지 않은 가정·질문을 모두 먼저 해결한 뒤 `GA 새라운드`를 요청한다(남아 있으면 거부된다).
   - 같은 architecture.md에서 `inputs`부터 다시 시작한다. 라운드 번호가 1 오른다.
   - 새 라운드는 자기 `purpose` 드라이버와, 1부터 번호를 매긴 자기 `high` 드라이버가 필요하다. 이전 라운드의 드라이버, 결정, 대응표는 승인 조건에 세지 않는다.
 
 ## 7. 명령 표
 
-**에이전트가 실행하는 `ga` 명령** (Bash)
+**상태를 바꾸는 MCP 도구** (서버 `ga`. 모든 도구는 선택 인자 `root`를 받지만 보통 주지 않는다)
+
+| 도구 | 인자 | 하는 일 |
+|---|---|---|
+| `mcp__plugin_grounded-arch_ga__ga_init` | `mode`(선택) | 설계 시작. 모드와 근거, 격리 설정 경로를 출력 |
+| `mcp__plugin_grounded-arch_ga__ga_add` | `kind`, `item` | 항목 추가. 종료 3은 규칙 위반 |
+| `mcp__plugin_grounded-arch_ga__ga_update` | `id`, `patch` | 항목 내용 수정 |
+| `mcp__plugin_grounded-arch_ga__ga_ask` | `id` | 질문을 물은 상태(asked)로 |
+| `mcp__plugin_grounded-arch_ga__ga_resolve` | `id`, `source_type`, `ref` | 직접 근거(code, literature, measurement)로 가정이나 질문을 해결. 결정에는 못 씀 |
+| `mcp__plugin_grounded-arch_ga__ga_render` | 없음 | 원장을 architecture.md의 ga 블록에 반영 |
+| `mcp__plugin_grounded-arch_ga__ga_verify` | 없음 | 검증 패널 실행, 보고서 작성. 종료 4는 과금 점검 실패, 5는 일부 모델 실패 |
+| `mcp__plugin_grounded-arch_ga__ga_dispute` | `id`, `evidence` | 지적에 증거를 붙여 반박 |
+| `mcp__plugin_grounded-arch_ga__ga_enforce` | 없음 | 격리 설정을 다시 설치(셸이 "격리가 꺼져 있어" 막힐 때) |
+
+같은 서버의 `ga_status`, `ga_check`, `ga_rule`은 아래 셸 명령과 같다.
+
+**셸에서 실행하는 읽기 명령** (Bash. 상태를 바꾸지 않는다)
 
 | 명령 | 하는 일 |
 |---|---|
 | `ga status [--json]` | 단계, 모드, 라운드, 반복, 미해결 수(모든 라운드의 가정·질문 포함), 보고서 상태(`report_fresh`, `panel_ok`, `findings_unprocessed`, `build_ok`) |
-| `ga init [--mode greenfield\|brownfield]` | 설계 시작. 모드와 근거를 출력 |
-| `ga add KIND` (stdin JSON) | 항목 추가. KIND는 driver, constraint, fact, decision, assumption, question, mapping. 종료 3은 규칙 위반 |
-| `ga update ID` (stdin JSON) | 항목 내용 수정 |
 | `ga check [--json] [--item KIND]` | 원장 형식 검사. `--item`이면 stdin의 항목 하나만 |
-| `ga ask Q-n` | 질문을 물은 상태(asked)로 |
-| `ga resolve ID --source-type T --ref REF` | 직접 근거(T는 code, literature, measurement)로 가정이나 질문을 해결. 결정에는 못 씀. literature의 REF는 URL, `doi:`, `isbn:` |
-| `ga render` | 원장을 architecture.md의 ga 블록에 반영 |
-| `ga verify` | 검증 패널 실행, 보고서 작성. 종료 4는 과금 점검 실패, 5는 일부 모델 실패 |
-| `ga dispute FND-n --evidence TEXT` | 지적에 증거를 붙여 반박 |
+| `ga effect check` | 단계가 시작된 뒤 바뀐 파일과 그중 허용 밖인 것(`violations`). 위반이 있으면 종료 1 |
 | `ga billing check claude` | 검증 실행기의 구독 과금 점검 결과 |
 | `ga rule` / `ga version` | 짧은 근거 규칙 / 버전 |
 
@@ -243,5 +237,6 @@ EOF
 | `GA 되돌리기` | `design-review`나 `skeleton`에서 반복 하나를 추가해 `iterating`으로 |
 | `GA 새라운드` | `implement`에서 새 라운드의 `inputs`로 |
 | `GA 테스트명령 명령` | 빌드·테스트 명령 지정(기존 코드 모드 뼈대 검증용) |
+| `GA 상태승인` | 상태 폴더가 `ga` 밖에서 바뀌었다는 경고를 확인하고, 지금 상태를 상태 지문의 새 기준으로 받아들임 |
 
 한 메시지의 `GA` 줄들은 모두 적용되거나 하나도 적용되지 않는다.
