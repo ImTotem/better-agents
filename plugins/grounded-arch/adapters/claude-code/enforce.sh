@@ -3,7 +3,11 @@
 # Usage: enforce.sh install ROOT   merges the sandbox keys into .claude/settings.local.json at the
 #                                  repository's main checkout; prints the settings path.
 #        enforce.sh status ROOT    prints {"active":bool,"reason":"...","settings":"<path>"}
-# No git command is run. bash 3.2 + jq only.
+#        enforce.sh protects ROOT PATH
+#                                  exit 0 when canonical PATH is a Claude Code settings file
+#                                  (.claude/settings*.json of ROOT, of the main checkout, or of
+#                                  ~/.claude) -- the write gate keeps the agent's tools off them; 1 if not
+# No git command is run. bash 3.2 + jq only. status runs on every shell command: one jq call.
 
 _self=${BASH_SOURCE[0]}
 while [ -L "$_self" ]; do
@@ -43,7 +47,8 @@ find_main() { # ROOT
   done
 }
 
-[ $# -eq 2 ] || die "사용법: enforce.sh install|status ROOT" 2
+USAGE="사용법: enforce.sh install|status ROOT | enforce.sh protects ROOT PATH"
+case "$1:$#" in install:2 | status:2 | protects:3) ;; *) die "$USAGE" 2 ;; esac
 cmd=$1
 ROOT=$(resolve_dir "$2" "$PWD") || die "enforce: 디렉터리가 아닙니다: $2" 2
 find_main "$ROOT"
@@ -81,35 +86,55 @@ do_install() {
 
 out() { jq -nc --argjson a "$1" --arg r "$2" --arg s "$SETTINGS" '{active:$a, reason:$r, settings:$s}'; exit 0; }
 
+readable() { if [ -f "$1" ] && [ -r "$1" ]; then echo "$1"; else echo /dev/null; fi; } # FILE -> FILE or /dev/null
+
 do_status() {
-  local managed files f merged
-  if [ "$(uname -s)" = Darwin ]; then
-    managed="/Library/Application Support/ClaudeCode/managed-settings.json"
-  else
-    managed=/etc/claude-code/managed-settings.json
-  fi
+  local managed
+  case "${OSTYPE:-}" in
+    darwin*) managed="/Library/Application Support/ClaudeCode/managed-settings.json" ;;
+    *) managed=/etc/claude-code/managed-settings.json ;;
+  esac
   if [ "${GA_TEST_MODE:-}" = 1 ] && [ -n "${GA_TEST_MANAGED_SETTINGS:-}" ]; then managed=$GA_TEST_MANAGED_SETTINGS; fi
   if [ ! -f "$SETTINGS" ] || [ ! -r "$SETTINGS" ]; then out false "격리 설정 파일이 없거나 읽을 수 없습니다: $SETTINGS (ga enforce 로 설치하세요)"; fi
-  jq -e 'type == "object"' "$SETTINGS" >/dev/null 2>&1 || out false "격리 설정 파일이 올바른 JSON이 아닙니다: $SETTINGS"
-  # Highest precedence first: managed, local, project, user. Unreadable non-local files are skipped.
-  files=""
-  for f in "$managed" "$SETTINGS" "$ROOT/.claude/settings.json" "$HOME/.claude/settings.json"; do
-    if [ -f "$f" ] && jq -e 'type == "object"' "$f" >/dev/null 2>&1; then files="$files$f
-"; fi
+  # Highest precedence first: managed, local, project, user. Unreadable or invalid non-local files
+  # are skipped; an invalid local file is reported.
+  jq -nc --rawfile m "$(readable "$managed")" --rawfile l "$SETTINGS" --rawfile p "$(readable "$ROOT/.claude/settings.json")" \
+    --rawfile u "$(readable "$HOME/.claude/settings.json")" --arg sd "$SD" --arg s "$SETTINGS" '
+    def obj: (try fromjson catch null) | if type == "object" then . else null end;
+    def res($a; $r): {active: $a, reason: $r, settings: $s};
+    ($l | obj) as $lo
+    | if $lo == null then res(false; "격리 설정 파일이 올바른 JSON이 아닙니다: \($s)")
+      else
+        ([($m | obj), $lo, ($p | obj), ($u | obj)] | map(select(. != null))) as $fs
+        | ([$fs[] | try .sandbox.enabled | select(. != null)] | .[0]) as $en
+        | ([$fs[] | try .sandbox.allowUnsandboxedCommands | select(. != null)] | .[0]) as $un
+        | ([$fs[] | try .sandbox.filesystem.denyWrite[]] | index($sd) != null) as $dn
+        | if $en != true then res(false; "sandbox.enabled 가 true 가 아닙니다 (관리, 사용자, 프로젝트, 로컬 설정을 합쳐 본 결과)")
+          elif $un != false then res(false; "sandbox.allowUnsandboxedCommands 가 false 가 아닙니다 (격리 밖 실행이 허용됨)")
+          elif ($dn | not) then res(false; "sandbox.filesystem.denyWrite 에 상태 폴더(\($sd))가 없습니다")
+          else res(true; "격리 설정이 켜져 있습니다") end
+      end' 2>/dev/null || out false "설정을 읽지 못했습니다"
+}
+
+# Canonical form of directory D, which need not exist (its parent is resolved instead).
+canon_dir() { # D
+  if [ -d "$1" ]; then (cd -P "$1" 2>/dev/null && pwd -P) && return 0; fi
+  printf '%s/%s\n' "$(cd -P "$(dirname "$1")" 2>/dev/null && pwd -P)" "$(basename "$1")"
+}
+
+do_protects() { # PATH (canonical, from the core's write gate)
+  local p=$1 d n dir
+  d=${p%/*}; n=${p##*/}
+  shopt -s nocasematch # APFS is case-insensitive: .CLAUDE/Settings.json is the same file
+  case "$n" in settings*.json) ;; *) exit 1 ;; esac
+  for dir in "$ROOT/.claude" "$MAIN/.claude" "$HOME/.claude"; do
+    [[ $d == "$(canon_dir "$dir")" ]] && exit 0
   done
-  merged=$(printf '%s' "$files" | while IFS= read -r f; do [ -n "$f" ] && cat "$f"; done | jq -s --arg sd "$SD" '
-    def first_def(p): [.[] | p | select(. != null)] | .[0];
-    { enabled: first_def(.sandbox.enabled),
-      unsandboxed: first_def(.sandbox.allowUnsandboxedCommands),
-      denied: ([.[] | .sandbox.filesystem.denyWrite[]?] | index($sd) != null) }') || out false "설정을 읽지 못했습니다"
-  [ "$(jq -r .enabled <<<"$merged")" = true ] || out false "sandbox.enabled 가 true 가 아닙니다 (관리, 사용자, 프로젝트, 로컬 설정을 합쳐 본 결과)"
-  [ "$(jq -r .unsandboxed <<<"$merged")" = false ] || out false "sandbox.allowUnsandboxedCommands 가 false 가 아닙니다 (격리 밖 실행이 허용됨)"
-  [ "$(jq -r .denied <<<"$merged")" = true ] || out false "sandbox.filesystem.denyWrite 에 상태 폴더($SD)가 없습니다"
-  out true "격리 설정이 켜져 있습니다"
+  exit 1
 }
 
 case "$cmd" in
   install) do_install ;;
   status) do_status ;;
-  *) die "사용법: enforce.sh install|status ROOT" 2 ;;
+  protects) do_protects "$3" ;;
 esac

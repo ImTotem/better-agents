@@ -107,6 +107,28 @@ test_enforce_status_inactive_when_missing_or_incomplete() {
   out=$("$ENF" status "$r"); assert_eq false "$(jq -r .active <<<"$out")"
 }
 
+# An unreadable or invalid lower-precedence file is skipped; a non-object sandbox value is not "on".
+test_enforce_status_skips_bad_other_files() {
+  local r out; r=$(phys "$(mk_project)"); "$ENF" install "$r" >/dev/null
+  mkdir -p "$HOME/.claude"; echo 'garbage' >"$HOME/.claude/settings.json"; echo '{"sandbox":"x"}' >"$r/.claude/settings.json"
+  out=$(GA_TEST_MANAGED_SETTINGS=/nonexistent "$ENF" status "$r"); assert_eq true "$(jq -r .active <<<"$out")"
+  echo '{"sandbox":"x"}' >"$r/.claude/settings.local.json"
+  out=$(GA_TEST_MANAGED_SETTINGS=/nonexistent "$ENF" status "$r"); assert_eq false "$(jq -r .active <<<"$out")"
+}
+
+# The write gate asks the adapter which paths are Claude Code settings files of the design.
+test_enforce_protects_settings_files() {
+  local m w h p; read -r m w <<<"$(mk_wt)"; h=$(phys "$HOME")
+  for p in "$w/.claude/settings.local.json" "$w/.claude/settings.json" "$m/.claude/settings.local.json" "$m/.claude/Settings.Local.JSON" \
+           "$h/.claude/settings.json" "$h/.claude/settings.backup.json"; do
+    "$ENF" protects "$w" "$p" || _fail "not protected: $p"
+  done
+  for p in "$w/.claude/commands/x.md" "$w/settings.json" "$m/.claude/agents/settings.json" "$h/settings.json" "$w/src/a.c"; do
+    ! "$ENF" protects "$w" "$p" || _fail "protected: $p"
+  done
+  assert_status 2 "$ENF" protects "$w"
+}
+
 # ---- ga enforce / ga init wiring ----
 
 test_ga_enforce_installs_and_rebaselines() {
