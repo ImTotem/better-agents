@@ -82,3 +82,14 @@ test_effect_snapshot_after_init_and_transitions() { use_fake_claude; r=$(mk_proj
   echo c >"$r/new.txt"; f=$(mktemp); printf 'GA 승인 입력' >"$f"
   out=$(ga --root "$r" user-command --text-file "$f"); assert_eq allow "$(jq -r .decision <<<"$out")"; assert_eq iterating "$(sj "$r" .phase)"
   assert_eq '[]' "$(ga --root "$r" effect check | jq -c .changed)"; }
+
+test_effect_plugin_dir_inside_root_is_violation() { r=$(mk_project); mkdir -p "$r/vendor"; cp -R "$PLUGIN" "$r/vendor/ga-plugin"
+  cga() { "$r/vendor/ga-plugin/core/bin/ga" --root "$r" "$@"; }
+  cga init >/dev/null; set_state "$r" '.phase="implement"'; cga effect check >/dev/null
+  echo "# x" >>"$r/vendor/ga-plugin/core/lib/common.sh"; echo y >"$r/src.c"
+  rc=0; out=$(cga effect check 2>/dev/null) || rc=$?; assert_eq 1 "$rc"
+  assert_eq '["vendor/ga-plugin/core/lib/common.sh"]' "$(jq -c .violations <<<"$out")"
+  # plugin outside the project: a change in a same-named folder is not judged
+  r2=$(mk_project); ga --root "$r2" init >/dev/null; set_state "$r2" '.phase="implement"'; ga --root "$r2" effect check >/dev/null
+  mkdir -p "$r2/vendor"; echo z >"$r2/vendor/f"; ga --root "$r2" effect check >/dev/null || _fail "outside plugin must not restrict"
+}

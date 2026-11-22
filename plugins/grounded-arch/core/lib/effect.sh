@@ -128,10 +128,16 @@ ga_effect_check() { # ROOT
     '[.items[]? | select(.kind == "mapping" and .round == $r and (.change == "new" or .change == "changed")) | .path | ltrimstr("./")]' \
     "$(ga_ledger_path "$root")" 2>/dev/null) || maps='[]'
   prot=$(printf '%s\n' $GA_EFF_PROTECTED | jq -Rn '[inputs]')
-  out=$(jq -nc --argjson ch "$changed" --argjson m "$maps" --argjson pr "$prot" --arg ph "$phase" --arg mode "$mode" '
+  # The plugin root (contains core/) is protected too when it lies inside the project.
+  local pd rc_
+  pd=$(cd -P "$GA_CORE/.." 2>/dev/null && pwd -P) || pd=""
+  rc_=$(ga_canon "$root") || rc_=$root
+  case "$pd" in "$rc_"/*) pd=${pd#"$rc_"/} ;; *) pd="" ;; esac
+  out=$(jq -nc --argjson ch "$changed" --argjson m "$maps" --argjson pr "$prot" --arg ph "$phase" --arg mode "$mode" --arg pd "$pd" '
     def inmap: . as $x | any($m[]; . as $p | $x == $p or ($x | startswith(($p | rtrimstr("/")) + "/")));
     def free: ($ph == "implement") or ($ph == "skeleton" and $mode != "brownfield");
     def ok: if (. as $x | $pr | index($x)) != null then false
+            elif $pd != "" and (. == $pd or startswith($pd + "/")) then false
             elif free then true
             elif startswith("docs/architecture/") then true
             elif $ph == "skeleton" then inmap
