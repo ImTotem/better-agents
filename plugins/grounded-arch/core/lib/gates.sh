@@ -258,13 +258,23 @@ _ga_seg_command_match() {
         case "${w//[\'\"]/}" in -delete | -exec | -execdir | -ok | -okdir) SEG_MATCH="find $w"; break ;; esac
       done ;;
     git)
+      local opt="" gdir="" gwt="" del=0 nf=0 x
       j=$((CW_IDX + 1))
       while [ $j -lt ${#words[@]} ]; do
         w=${words[$j]}
         j=$((j + 1))
-        if [ $skip = 1 ]; then skip=0; continue; fi
+        if [ $skip = 1 ]; then
+          skip=0; wc=${w//[\'\"]/}
+          # -C DIR (each relative to the previous one) and --work-tree DIR: where git works (A2)
+          case "$opt" in
+            -C) case "$wc" in /*) gdir=$wc ;; *) gdir=${gdir:+$gdir/}$wc ;; esac ;;
+            --work-tree) gwt=$wc ;;
+          esac
+          continue
+        fi
         case "$w" in
-          -C | -c | --git-dir | --work-tree | --namespace) skip=1; continue ;;
+          -C | -c | --git-dir | --work-tree | --namespace) skip=1; opt=$w; continue ;;
+          --work-tree=*) gwt=${w#--work-tree=}; gwt=${gwt//[\'\"]/}; continue ;;
           -*) continue ;;
         esac
         sub=$w
@@ -272,12 +282,25 @@ _ga_seg_command_match() {
       done
       case "$sub" in apply | checkout | restore | reset | rm | mv | stash | clean) SEG_MATCH="git $sub" ;; esac
       if [ "$sub" = clean ]; then
-        T_GIT=${T_GIT:-"git clean"}
-      elif [ "$sub" = stash ]; then
+        T_GIT=${T_GIT:-"git clean"}; del=1
+        # git clean -ff (force twice) also removes nested repositories
         while [ $j -lt ${#words[@]} ]; do
-          case "${words[$j]//[\'\"]/}" in -u | --include-untracked | -a | --all | -[A-Za-z]*[ua]*) T_GIT=${T_GIT:-"git stash ${words[$j]}"} ;; esac
+          x=${words[$j]//[\'\"]/}
+          case "$x" in --force) nf=$((nf + 1)) ;; --*) ;; -*) x=${x//[^f]/}; nf=$((nf + ${#x})) ;; esac
           j=$((j + 1))
         done
+        [ $nf -lt 2 ] || CLEAN_FORCE2=1
+      elif [ "$sub" = stash ]; then
+        while [ $j -lt ${#words[@]} ]; do
+          case "${words[$j]//[\'\"]/}" in -u | --include-untracked | -a | --all | -[A-Za-z]*[ua]*) T_GIT=${T_GIT:-"git stash ${words[$j]}"}; del=1 ;; esac
+          j=$((j + 1))
+        done
+      fi
+      # A2: the directory git clean / git stash -u works in reaches the designs there.
+      if [ $del = 1 ] && [ "$OWN" = 0 ]; then
+        if [ -n "$gwt" ]; then case "$gwt" in /*) gdir=$gwt ;; *) gdir=${gdir:+$gdir/}$gwt ;; esac; fi
+        _ga_reach_dir "${gdir:-.}"
+        [ "$sub" != clean ] || CLEAN_DIRS=$CLEAN_DIRS$RD
       fi ;;
   esac
 }
@@ -432,7 +455,8 @@ _ga_seg_targets() {
 _ga_t_state() { T_STATE=${T_STATE:-$1}; }
 
 # Sets NT to target word RAW with quotes removed and $TMPDIR/, $HOME, ~ expanded from the
-# gate's own environment.
+# gate's own environment. $PWD is the shell's current directory, so $PWD/x becomes the
+# relative ./x (B3): it then follows the cds before it like any relative target.
 _ga_tgt_norm() { # RAW
   NT=${1//[\'\"]/}
   case "$NT" in
@@ -441,6 +465,8 @@ _ga_tgt_norm() { # RAW
     '${HOME}/'*) NT=$HOME/${NT#\$\{HOME\}/} ;;
     '~/'*) NT=$HOME/${NT#\~/} ;;
     '~' | '$HOME' | '${HOME}') NT=$HOME ;;
+    '$PWD/'* | '${PWD}/'*) [ "$PWD_REASSIGNED" = 1 ] || NT=./${NT#*/} ;;
+    '$PWD' | '${PWD}') [ "$PWD_REASSIGNED" = 1 ] || NT=. ;;
   esac
 }
 
@@ -494,26 +520,197 @@ _ga_own() { # C|""
   [ "$DISC" != 1 ]
 }
 
-# N2: a cd/pushd into a design (cd ../.. from a nested repository) makes the relative targets
-# after it that design's. CD_CUR follows the cds in order ("" once unknown). Uses words/CW_IDX.
-_ga_cd_seg() {
-  local k=$((CW_IDX + 1)) w="" c r NT LR
+# N2/B1: CD_PD lists every directory the shell may be in when it reaches the current segment
+# (at most 16; a destination that does not exist yet is resolved lexically); CD_UNK=1 once a
+# destination is unknown (cd "$D", cd -, popd). In a plain && chain at the top level
+# (CD_PURE=1, no ! before the cd) the segments after a cd run only where it went, so its
+# destination replaces the list. Anywhere else the cd may not apply to them (it can sit in ( ),
+# a pipeline, a background job, after ; or ||, or fail), so the destination is added. A design
+# found from a destination makes the relative targets after it that design's (CD_ROOTS ->
+# OWN_CD). Uses words/CW_IDX.
+_ga_cd_seg() { # DEPTH
+  local k=0 w="" c p d add="" rep=0 NT LR
+  [ "$CD_PURE" = 1 ] && [ "${1:-0}" = 0 ] && rep=1
+  while [ $k -lt "$CW_IDX" ]; do [ "${words[$k]}" != '!' ] || rep=0; k=$((k + 1)); done
+  k=$((CW_IDX + 1))
   while [ $k -lt ${#words[@]} ]; do
     case "${words[$k]}" in -) w=-; break ;; -*) k=$((k + 1)) ;; *) w=${words[$k]}; break ;; esac
   done
-  [ -n "$CD_CUR" ] || return 0
   if [ -z "$w" ]; then c=$HOME; else _ga_tgt_norm "$w"; c=$NT; fi
   case "$c" in
-    '' | - | *'$'* | *'*'* | *'?'* | *'['* | *'{'* | *'`'*) CD_CUR=""; return 0 ;;
-    /*) ;;
-    *) c=$CD_CUR/$c ;;
+    '' | - | *'$'* | *'*'* | *'?'* | *'['* | *'{'* | *'`'*)
+      CD_UNK=1
+      if [ $rep = 1 ]; then CD_PD=""; CD_N=0; fi
+      return 0 ;;
+    /*) if d=$(ga_canon "$c" 2>/dev/null); then add=$d$NL; else CD_UNK=1; fi ;;
+    *)
+      while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        d=$(ga_canon "$p/$c" 2>/dev/null) || { CD_UNK=1; continue; }
+        case "$NL$add" in *"$NL$d$NL"*) ;; *) add=$add$d$NL ;; esac
+      done <<EOF
+$CD_PD
+EOF
+      ;;
   esac
-  if ! c=$(ga_canon "$c" 2>/dev/null) || [ ! -d "$c" ]; then CD_CUR=""; return 0; fi
-  CD_CUR=$c
-  _ga_lookup_root "$c" || return 0
-  r=$LR
-  _ga_add_root "$r"
-  case "$NL$CD_ROOTS" in *"$NL$r$NL"*) ;; *) CD_ROOTS=$CD_ROOTS$r$NL ;; esac
+  if [ $rep = 1 ]; then CD_PD=""; CD_N=0; fi
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    case "$NL$CD_PD" in *"$NL$d$NL"*) continue ;; esac
+    if [ "$CD_N" -ge 16 ]; then CD_UNK=1; break; fi
+    CD_PD=$CD_PD$d$NL; CD_N=$((CD_N + 1))
+    _ga_lookup_root "$d" || continue
+    _ga_add_root "$LR"
+    case "$NL$CD_ROOTS" in *"$NL$LR$NL"*) ;; *) CD_ROOTS=$CD_ROOTS$LR$NL ;; esac
+  done <<EOF
+$add
+EOF
+}
+
+# B1: classifies a relative target after a cd from every directory the shell may be in (CD_PD),
+# exactly as a target given without a cd. ga_canon resolves a relative path against $PWD, so
+# PWD is set to each of them in turn (the gate's process stays where it is).
+_ga_at_dirs() { # FN ARGS...
+  local b PWD CD_SEEN=0
+  while IFS= read -r b; do
+    [ -n "$b" ] || continue
+    PWD=$b
+    "$@" </dev/null
+  done <<EOF
+$CD_PD
+EOF
+}
+
+# True when ROOT holds a design that is not paused (an unreadable state.json counts as active,
+# as it does at the cwd). Sets AW to the deny-reason prefix naming its phase and location.
+_ga_active() { # ROOT
+  local GS_PHASE GS_MODE GS_PAUSED
+  AW=""
+  [ -f "$1/docs/architecture/.state/state.json" ] && ! ga_paused_marker "$1" || return 1
+  if ! _ga_gate_state "$1"; then AW="설계 상태(state.json)를 읽을 수 없는 상태 ($1)"; return 0; fi
+  [ "$GS_PAUSED" != true ] || return 1
+  AW="현재 단계 $GS_PHASE ($1)"
+}
+
+# Active designs at or above the cwd, passing .git boundaries (unlike ga_find_root): the
+# fallback when a cd destination or a ga/git directory is unknown. Computed once per gate call.
+_ga_anc_roots() {
+  local p=$CWDP AW
+  [ "$ANC_DONE" != 1 ] || return 0
+  ANC_DONE=1; ANC_ROOTS=""; ANC_W=""
+  while [ -n "$p" ]; do
+    if _ga_active "$p"; then ANC_ROOTS=$ANC_ROOTS$p$NL; [ -n "$ANC_W" ] || ANC_W=$AW; fi
+    [ "$p" != / ] || break
+    p=${p%/*}; [ -n "$p" ] || p=/
+  done
+}
+
+# Relative names that may be .state or an ancestor of it when their directory is unknown.
+_ga_rel_names() { # LC (lowercased; ./ and a trailing / removed)
+  case "/$1/" in */../* | /./ | //) return 0 ;; esac
+  case "$1" in
+    docs | docs/architecture | architecture | .state | architecture/.state | docs/architecture/.state | */docs | */docs/architecture | */architecture | */.state) return 0 ;;
+  esac
+  return 1
+}
+
+# B2: after a cd whose destination is unknown, relative target T may lie anywhere. Every active
+# design above the cwd protects its .state from it -- a `..`, or docs/architecture/.state by
+# name, text or glob -- and only that rule applies (not the phase write rules: a worktree
+# nested in a checkout with a design must keep working). Sets T_ANC.
+_ga_anc_state() { # T RAW
+  local rel lc
+  [ "$OWN" = 0 ] && [ "$CD_UNK" = 1 ] && [ -z "$T_ANC" ] || return 0
+  _ga_anc_roots
+  [ -n "$ANC_ROOTS" ] || return 0
+  case "$1" in
+    *'$'* | *'*'* | *'?'* | *'['* | *'{'* | *'`'*) _ga_unexp_state "$1" && T_ANC=$2; return 0 ;;
+  esac
+  rel=${1#./}; rel=${rel%/}; lc=$(_ga_lc "$rel")
+  if _ga_rel_names "$lc"; then T_ANC=$2; return 0; fi
+  case "$lc" in *architecture* | *.state*) T_ANC=$2 ;; esac
+  return 0
+}
+
+# A2: WORD names a directory the command makes ga or git work in (ga --root, GA_ROOT=,
+# git -C/--work-tree). The designs found from it -- from every directory the shell may be in,
+# for a relative one -- are reachable (REACH_ROOTS); RD lists the resolved directories. An
+# operand that cannot be resolved makes the designs above the cwd reachable (REACH_UNK).
+_ga_reach_dir() { # WORD
+  local NT b c LR
+  RD=""
+  [ "$OWN" = 0 ] || return 0
+  _ga_tgt_norm "$1"
+  case "$NT" in
+    '' | *'$'* | *'*'* | *'?'* | *'['* | *'{'* | *'`'*) REACH_UNK=1; return 0 ;;
+    /*) ;;
+    *) [ "$CD_UNK" != 1 ] || REACH_UNK=1 ;;
+  esac
+  while IFS= read -r b; do
+    [ -n "$b" ] || continue
+    case "$NT" in /*) c=$NT ;; *) c=$b/$NT ;; esac
+    c=$(ga_canon "$c" 2>/dev/null) || { REACH_UNK=1; continue; }
+    RD=$RD$c$NL
+    if _ga_lookup_root "$c"; then
+      case "$NL$REACH_ROOTS" in *"$NL$LR$NL"*) ;; *) REACH_ROOTS=$REACH_ROOTS$LR$NL ;; esac
+    fi
+    case "$NT" in /*) break ;; esac
+  done <<EOF
+$CD_PD
+EOF
+}
+
+# A2: git clean removes untracked files below the directory it runs in. True when an active
+# design root lies at most two directories below DIR in the same repository (no .git on the
+# way, unless git clean was forced twice). Bounded search, only for git clean, and only when DIR
+# is inside a repository. Sets AW.
+_ga_below_active() { # DIR
+  local f r p=$1
+  while [ ! -e "$p/.git" ]; do
+    [ "$p" != / ] || return 1
+    p=${p%/*}; [ -n "$p" ] || p=/
+  done
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    r=${f%/docs/architecture/.state/state.json}
+    if [ "$CLEAN_FORCE2" != 1 ]; then
+      p=$r
+      while [ ${#p} -gt ${#1} ]; do
+        [ ! -e "$p/.git" ] || continue 2
+        p=${p%/*}
+      done
+    fi
+    _ga_active "$r" && return 0
+  done <<EOF
+$(find "$1" -mindepth 1 -maxdepth 6 \( -name node_modules -o -name .git -o -name vendor -o -name target -o -name build -o -name dist \) -prune -o -path '*/docs/architecture/.state/state.json' -print 2>/dev/null)
+EOF
+  return 1
+}
+
+# A2: true when the command reaches an active design other than the cwd's: one found from a
+# write target or a cd destination (FOUND_ROOTS) or from ga --root, GA_ROOT= or git -C
+# (REACH_ROOTS); one above the cwd when such a directory is unknown; and for git clean
+# (CLEAN=1) one below the directories it runs in. Sets AW to the first one's deny prefix.
+_ga_reach_active() { # CLEAN
+  local r
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    _ga_active "$r" && return 0
+  done <<EOF
+$FOUND_ROOTS$REACH_ROOTS
+EOF
+  if [ "$REACH_UNK" = 1 ] || [ "$CD_UNK" = 1 ]; then
+    _ga_anc_roots
+    if [ -n "$ANC_ROOTS" ]; then AW=$ANC_W; return 0; fi
+  fi
+  [ "$1" = 1 ] || return 1
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    _ga_below_active "$r" && return 0
+  done <<EOF
+$CLEAN_DIRS
+EOF
+  return 1
 }
 
 # Brace expansion of S into BX (bash expands {a,b} lists before globbing, also in a redirect
@@ -641,6 +838,11 @@ _ga_check_target() { # RAW KIND
   _ga_tgt_norm "$raw"; t=$NT
   [ -n "$t" ] || return 0
   case "$t" in /dev/null | /dev/stdout | /dev/stderr) return 0 ;; esac
+  # B1/B2: a relative target after a cd/pushd is also classified from every directory the shell
+  # may be in; when a destination is unknown, the designs above the cwd protect their .state.
+  if [ "$CD_SEEN" = 1 ]; then
+    case "$t" in /*) ;; *) _ga_at_dirs _ga_check_target "$raw" "$2"; _ga_anc_state "$t" "$raw" ;; esac
+  fi
   case "$t" in
     *'$'* | *'*'* | *'?'* | *'['* | *'{'* | *'`'*)
       # Unexpanded: .state by text or by a glob that reaches it; plugin and project membership
@@ -664,10 +866,7 @@ _ga_check_target() { # RAW KIND
         _ga_own "" || return 0
         # After cd/pushd a relative target cannot be resolved; refuse the obvious .state ancestors.
         rel=${t#./}; rel=${rel%/}; lc=$(_ga_lc "$rel")
-        case "/$lc/" in */../* | /./ | //) _ga_t_state "$raw" ;; esac
-        case "$lc" in
-          docs | docs/architecture | architecture | .state | architecture/.state | docs/architecture/.state | */docs | */docs/architecture | */architecture | */.state) _ga_t_state "$raw" ;;
-        esac
+        _ga_rel_names "$lc" && _ga_t_state "$raw"
         [ "$2" = w ] && T_UNRES=${T_UNRES:-$raw}
         return 0 ;;
     esac
@@ -687,8 +886,8 @@ _ga_check_target() { # RAW KIND
 # R_STATE (1 if a target is inside .state) and R_ANYBAD (1 if any non-exempt target), and
 # feeds the same targets to the plugin/brownfield checks (T_PLUGIN, T_UNRES, TL).
 # Quoted '>' characters (e.g. echo "a > b") can produce false denies; accepted (best effort).
-_ga_scan_redirects() { # SEG ROOT
-  local rest=$1 root=$2 re t amp c PC
+_ga_scan_redirects() { # SEG
+  local rest=$1 re t amp
   re='^[^>]*>(>?)(&?)[[:space:]]*([^[:space:]<>]*)(.*)$'
   while [[ $rest =~ $re ]]; do
     amp=${BASH_REMATCH[2]}
@@ -699,66 +898,86 @@ _ga_scan_redirects() { # SEG ROOT
       if [ -z "$t" ] || [[ $t =~ ^([0-9]+|-)$ ]]; then continue; fi
     fi
     [ -n "$t" ] || continue
-    case "$t" in
-      /dev/null) continue ;;
-      '$TMPDIR/'* | '${TMPDIR}/'*)
-        # expanded from the gate's own env (the command may reassign TMPDIR: not exempt then)
-        if [ "$TMPDIR_REASSIGNED" = 1 ]; then t='$TMPDIR_REASSIGNED'; else t=${TMPDIR:-/tmp}/${t#*/}; fi ;;
-      '$HOME/'*) t=$HOME/${t#\$HOME/} ;;
-      '${HOME}/'*) t=$HOME/${t#\$\{HOME\}/} ;;
-      '~/'*) t=$HOME/${t#\~/} ;;
-    esac
-    # Unexpandable targets (variables, globs, braces, backticks) are never exempt.
-    case "$t" in
-      *'$'* | *'*'* | *'?'* | *'['* | *'{'* | *'`'*)
-        _ga_prefix_canon "$t"
-        _ga_own "$PC" || continue
-        [ -n "$R_BAD" ] || R_BAD="> $t"
-        R_ANYBAD=1
-        T_UNRES=${T_UNRES:-"> $t"}
-        # O1: bash expands a single-match redirect glob, so classify it like a command target
-        # (text, then the glob walk toward .state).
-        _ga_unexp_state "$t" && R_STATE=1
-        continue ;;
-    esac
-    # After a cd/pushd in the same command, relative targets cannot be resolved: not exempt.
-    if [ "$CD_SEEN" = 1 ]; then
-      case "$t" in
-        /*) ;;
-        *) _ga_own "" || continue
-           [ -n "$R_BAD" ] || R_BAD="> $t"; R_ANYBAD=1; T_UNRES=${T_UNRES:-"> $t"}; continue ;;
-      esac
-    fi
-    if ! c=$(ga_canon "$t" 2>/dev/null) || [ -z "$c" ]; then
-      _ga_own "" || continue
+    _ga_redir_target "$t"
+  done
+}
+
+# One redirect target T (quotes removed) of _ga_scan_redirects. Uses root, CD_SEEN, PLUG.
+_ga_redir_target() { # T
+  local t=$1 c PC
+  case "$t" in
+    /dev/null) return 0 ;;
+    '$TMPDIR/'* | '${TMPDIR}/'*)
+      # expanded from the gate's own env (the command may reassign TMPDIR: not exempt then)
+      if [ "$TMPDIR_REASSIGNED" = 1 ]; then t='$TMPDIR_REASSIGNED'; else t=${TMPDIR:-/tmp}/${t#*/}; fi ;;
+    '$HOME/'*) t=$HOME/${t#\$HOME/} ;;
+    '${HOME}/'*) t=$HOME/${t#\$\{HOME\}/} ;;
+    '~/'*) t=$HOME/${t#\~/} ;;
+    '$PWD/'* | '${PWD}/'*) [ "$PWD_REASSIGNED" = 1 ] || t=./${t#*/} ;;
+    '$PWD' | '${PWD}') [ "$PWD_REASSIGNED" = 1 ] || t=. ;;
+  esac
+  # B1/B2 (as for command targets): also from every directory the shell may be in after a cd.
+  if [ "$CD_SEEN" = 1 ]; then
+    case "$t" in /*) ;; *) _ga_at_dirs _ga_redir_target "$t"; _ga_anc_state "$t" "> $t" ;; esac
+  fi
+  # Unexpandable targets (variables, globs, braces, backticks) are never exempt.
+  case "$t" in
+    *'$'* | *'*'* | *'?'* | *'['* | *'{'* | *'`'*)
+      _ga_prefix_canon "$t"
+      _ga_own "$PC" || return 0
       [ -n "$R_BAD" ] || R_BAD="> $t"
       R_ANYBAD=1
       T_UNRES=${T_UNRES:-"> $t"}
-      continue
-    fi
-    _ga_own "$c" || continue
-    _ga_under "$PLUG" "$c" && T_PLUGIN=${T_PLUGIN:-"> $t"}
-    if _ga_under "$root/docs/architecture/.state" "$c"; then
-      [ -n "$R_BAD" ] || R_BAD="> $t"
-      R_STATE=1; R_ANYBAD=1
-    elif _ga_under "$root/docs/architecture" "$c"; then
-      continue
-    elif _ga_under "$root" "$c"; then
-      [ -n "$R_BAD" ] || R_BAD="> $t"
-      R_ANYBAD=1
-      TL=$TL$c$'\n'
-    fi
-  done
+      # O1: bash expands a single-match redirect glob, so classify it like a command target
+      # (text, then the glob walk toward .state).
+      _ga_unexp_state "$t" && R_STATE=1
+      return 0 ;;
+  esac
+  # After a cd/pushd in the same command, relative targets cannot be resolved: not exempt.
+  if [ "$CD_SEEN" = 1 ]; then
+    case "$t" in
+      /*) ;;
+      *) _ga_own "" || return 0
+         [ -n "$R_BAD" ] || R_BAD="> $t"; R_ANYBAD=1; T_UNRES=${T_UNRES:-"> $t"}; return 0 ;;
+    esac
+  fi
+  if ! c=$(ga_canon "$t" 2>/dev/null) || [ -z "$c" ]; then
+    _ga_own "" || return 0
+    [ -n "$R_BAD" ] || R_BAD="> $t"
+    R_ANYBAD=1
+    T_UNRES=${T_UNRES:-"> $t"}
+    return 0
+  fi
+  _ga_own "$c" || return 0
+  _ga_under "$PLUG" "$c" && T_PLUGIN=${T_PLUGIN:-"> $t"}
+  if _ga_under "$root/docs/architecture/.state" "$c"; then
+    [ -n "$R_BAD" ] || R_BAD="> $t"
+    R_STATE=1; R_ANYBAD=1
+  elif _ga_under "$root/docs/architecture" "$c"; then
+    return 0
+  elif _ga_under "$root" "$c"; then
+    [ -n "$R_BAD" ] || R_BAD="> $t"
+    R_ANYBAD=1
+    TL=$TL$c$'\n'
+  fi
+  return 0
 }
 
 # Scans one command segment (loop body of the bash gate; uses the gate's locals).
 # DEPTH bounds the recursion into `bash -c STRING` / `eval STRING`.
 _ga_bash_seg() { # SEG DEPTH
-  local seg=$1 depth=${2:-0} k t sub skipcmd=0 OWN_HIT=0
+  local seg=$1 depth=${2:-0} k t w sub skipcmd=0 OWN_HIT=0
   local -a words
   words=($seg)
   [ ${#words[@]} -gt 0 ] || return 0
   CW=""; SEG_MATCH=""
+  # A2: GA_ROOT=DIR (an assignment or export) points ga at DIR.
+  if [ "$OWN" = 0 ]; then
+    for w in "${words[@]}"; do
+      w=${w//[\'\"]/}
+      case "$w" in GA_ROOT=*) _ga_reach_dir "${w#GA_ROOT=}" ;; esac
+    done
+  fi
   # Segments without a command word (>file, X=1 >file) still get their redirects scanned.
   if _ga_cmdword; then
     case "$CW" in '$'* | '`'*) ga_seen=1 ;; esac
@@ -767,17 +986,18 @@ _ga_bash_seg() { # SEG DEPTH
       local ga_sub=""
       k=$((CW_IDX + 1))
       while [ $k -lt ${#words[@]} ]; do
+        # A2: ga --root DIR reaches the design at DIR.
         case "${words[$k]}" in
-          --root) k=$((k + 2)); continue ;;
-          --root=*) k=$((k + 1)); continue ;;
+          --root) _ga_reach_dir "${words[$((k + 1))]-}"; k=$((k + 2)); continue ;;
+          --root=*) _ga_reach_dir "${words[$k]#--root=}"; k=$((k + 1)); continue ;;
         esac
         ga_sub=${words[$k]//[\'\"\\]/}
         break
       done
       case "$ga_sub" in
-        user-command | hook) [ -n "$internal" ] || internal=$ga_sub ;;
+        user-command | hook | gate) [ -n "$internal" ] || internal=$ga_sub ;;
         # R10: public ga segments skip only the command-word patterns.
-        add | update | ask | resolve | render | check | status | verify | dispute | init | version | rule | billing | context | gate) skipcmd=1 ;;
+        add | update | ask | resolve | render | check | status | verify | dispute | init | version | rule | billing | context) skipcmd=1 ;;
       esac
     fi
     if [ $skipcmd = 0 ]; then
@@ -789,7 +1009,7 @@ _ga_bash_seg() { # SEG DEPTH
       # target in that design.
       if [ -n "$SEG_MATCH" ] && [ -z "$match" ] && { [ "$OWN" != 1 ] || [ "$OWN_HIT" = 1 ]; }; then match=$SEG_MATCH; fi
     fi
-    case "$CW" in cd | pushd) _ga_cd_seg ;; esac
+    case "$CW" in cd | pushd) _ga_cd_seg "$depth" ;; popd) CD_UNK=1 ;; esac
     # `sh -c STRING` and `eval STRING`: the string is a command line too.
     if [ "$depth" -lt 3 ]; then
       case "$CW" in
@@ -809,11 +1029,11 @@ _ga_bash_seg() { # SEG DEPTH
       esac
     fi
   fi
-  _ga_scan_redirects "$seg" "$root"
+  _ga_scan_redirects "$seg"
 }
 
 _ga_gate_bash() {
-  local cmd="" ROOT0 FOUND_ROOTS="" CD_ROOTS="" EV_OUT="" NL=$'\n' r CWDP
+  local cmd="" ROOT0 FOUND_ROOTS="" CD_ROOTS="" EV_OUT="" NL=$'\n' r CWDP AW="" ANC_DONE=0 ANC_ROOTS="" ANC_W=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --command) [ $# -ge 2 ] || break; cmd=$2; shift 2 ;;
@@ -844,11 +1064,13 @@ _ga_ev_deny() { EV_OUT=$(_ga_gate_out deny "$1"); } # REASON
 
 # One pass of the bash gate for design ROOT. OWN=0: the design found from the cwd ("" = none):
 # every target is checked and the designs found from targets are recorded (only recorded when
-# there is no active design here). OWN=1: a design found from targets (N2): only its own targets
-# are checked. Sets EV_OUT to a deny decision, or leaves it empty.
+# there is no active design here); the internal-call, GA_*/PATH, git clean and B2 rules run in
+# this pass for every reachable design (A1/A2). OWN=1: a design found from targets (N2): only its
+# own targets are checked. Sets EV_OUT to a deny decision, or leaves it empty.
 _ga_bash_eval() { # CMD ROOT OWN
-  local cmd=$1 root=$2 OWN=$3 phase="" body segs seg corrupt=0 where="" DISC=0 OWN_CD=0 CD_CUR
-  local re_internal='(^|[;&|/[:space:]])ga[[:space:]]+(--root[= ][^[:space:]]+[[:space:]]+)?(user-command|hook)([^A-Za-z0-9_-]|$)'
+  local cmd=$1 root=$2 OWN=$3 phase="" body segs seg corrupt=0 where="" DISC=0 OWN_CD=0
+  local CD_PD CD_N=1 CD_UNK=0 CD_PURE=1 REACH_ROOTS="" REACH_UNK=0 RD="" CLEAN_DIRS="" CLEAN_FORCE2=0 T_ANC="" t
+  local re_internal='(^|[;&|/[:space:]])ga[[:space:]]+(--root[= ][^[:space:]]+[[:space:]]+)?(user-command|hook|gate)([^A-Za-z0-9_-]|$)'
   EV_OUT=""
   if [ -z "$root" ] || ga_paused_marker "$root"; then
     DISC=1
@@ -867,9 +1089,10 @@ _ga_bash_eval() { # CMD ROOT OWN
     if [ "$OWN" = 1 ]; then case "$NL$CD_ROOTS" in *"$NL$root$NL"*) OWN_CD=1 ;; esac; fi
   fi
 
-  # (a) internal commands and adapter hook scripts are never callable from Bash, in any phase.
-  if [ $DISC = 0 ] && [ "$OWN" = 0 ] && { [[ $cmd =~ $re_internal ]] || [[ $cmd == *adapters/*/hook.sh* ]]; }; then
-    _ga_ev_deny "$where: ga 내부 명령(user-command, hook)과 훅 스크립트는 직접 호출할 수 없습니다. 사용자만 'GA ...' 명령으로 호출합니다"
+  # (a) internal commands and adapter hook scripts are never callable from Bash, in any phase and
+  # with or without a design (A1): only the hook adapter calls them, and not through Bash.
+  if [ "$OWN" = 0 ] && { [[ $cmd =~ $re_internal ]] || [[ $cmd == *adapters/*/hook.sh* ]]; }; then
+    _ga_ev_deny "${where:+$where: }ga 내부 명령(user-command, hook, gate)과 훅 스크립트는 직접 호출할 수 없습니다. 사용자만 'GA ...' 명령으로 호출합니다"
     return 0
   fi
 
@@ -878,31 +1101,30 @@ _ga_bash_eval() { # CMD ROOT OWN
   segs=$(_ga_split_segments "$body")
 
   local CW CW_IDX SEG_MATCH TG_KIND match="" state_hit="" mention_any=0 internal="" ga_seen=0
-  local R_BAD="" R_STATE=0 R_ANYBAD=0 lbody CD_SEEN=0 TMPDIR_REASSIGNED=0
+  local R_BAD="" R_STATE=0 R_ANYBAD=0 lbody CD_SEEN=0 TMPDIR_REASSIGNED=0 PWD_REASSIGNED=0
   local T_STATE="" T_PLUGIN="" T_UNRES="" T_GIT="" TL="" ST=$root/docs/architecture/.state PLUG
-  local re_cd='(^|[^A-Za-z0-9_./-])(cd|pushd)([^A-Za-z0-9_./-]|$)'
+  local re_cd='(^|[^A-Za-z0-9_./-])(cd|pushd|popd)([^A-Za-z0-9_./-]|$)'
   local -a TG
   PLUG=""
   if [ $DISC = 0 ]; then PLUG=$(_ga_plugin_root) || PLUG=""; fi
   [ -n "$PLUG" ] || PLUG=/nonexistent/grounded-arch-plugin-root
-  CD_CUR=$CWDP
+  CD_PD=${CWDP:+$CWDP$NL}
+  [ -n "$CWDP" ] || CD_UNK=1
+  # CD_PURE: one line of segments joined only by && (redirections such as 2>&1 aside).
+  t=${body//&&/}; t=${t//>&/}; t=${t//&>/}; t=${t//<&/}
+  case "$t" in *';'* | *'|'* | *'&'* | *'('* | *')'* | *'`'* | *"$NL"*) CD_PURE=0 ;; esac
   lbody=$(_ga_lc "$body")
   # .state mention is computed over the whole command (assignment-only segments included).
   case "$lbody" in *.state*) mention_any=1 ;; esac
   if [[ $lbody =~ $re_cd ]]; then CD_SEEN=1; fi
   case "$body" in *TMPDIR=*) TMPDIR_REASSIGNED=1 ;; esac
+  case "$body" in *PWD=*) PWD_REASSIGNED=1 ;; esac
   while IFS= read -r seg; do
     _ga_bash_seg "$seg" 0
   done <<EOF
 $segs
 EOF
   set +f
-  [ $DISC = 0 ] || return 0
-
-  if [ "$OWN" = 0 ] && [ -n "$internal" ]; then
-    _ga_ev_deny "$where: ga 내부 명령($internal)은 직접 호출할 수 없습니다. 사용자만 'GA ...' 명령으로 호출합니다"
-    return 0
-  fi
 
   # R34b: GA_* or PATH changed around a ga invocation (e.g. GA_RUNNERS_DIR=... ga verify,
   # PATH=/tmp/fake:$PATH ga verify) could redirect the verifier or its billing preflight.
@@ -910,10 +1132,32 @@ EOF
   local re_env='(^|[^A-Za-z0-9_])(GA_[A-Za-z0-9_]*|PATH)\+?='
   local re_exp='(^|[^A-Za-z0-9_])(export|declare|typeset|readonly|local)[[:space:]]+(-[A-Za-z]+[[:space:]]+)*(GA_[A-Za-z0-9_]*|PATH)([^A-Za-z0-9_]|$)'
   if [[ $body =~ $re_word_ga ]]; then ga_seen=1; fi
-  if [ "$OWN" = 0 ] && [ "$ga_seen" = 1 ] && { [[ $body =~ $re_env ]] || [[ $body =~ $re_exp ]]; }; then
-    _ga_ev_deny "$where: ga를 실행하는 명령에서 GA_ 변수나 PATH를 바꿀 수 없습니다 (검증 실행기와 과금 점검을 바꿀 수 있습니다). 변수 없이 ga만 실행하세요"
-    return 0
+  if [ "$OWN" = 0 ]; then
+    # A1: the parsed form of (a) (also without a design).
+    if [ -n "$internal" ]; then
+      _ga_ev_deny "${where:+$where: }ga 내부 명령($internal)은 직접 호출할 수 없습니다. 사용자만 'GA ...' 명령으로 호출합니다"
+      return 0
+    fi
+    # A2: R34b for the cwd's design and for every design the command can reach.
+    if [ "$ga_seen" = 1 ] && { [[ $body =~ $re_env ]] || [[ $body =~ $re_exp ]]; }; then
+      if [ $DISC = 0 ] || _ga_reach_active 0; then
+        [ $DISC = 0 ] && AW=$where
+        _ga_ev_deny "$AW: ga를 실행하는 명령에서 GA_ 변수나 PATH를 바꿀 수 없습니다 (검증 실행기와 과금 점검을 바꿀 수 있습니다). 변수 없이 ga만 실행하세요"
+        return 0
+      fi
+    fi
+    # B2: a relative target after an unknown cd that may be .state of a design above the cwd.
+    if [ -n "$T_ANC" ]; then
+      _ga_ev_deny "$ANC_W: 설계 상태(docs/architecture/.state/)나 그 상위 디렉터리를 쓰거나 지우는 명령은 막혀 있습니다 (감지된 패턴: $T_ANC). 상태는 ga 명령으로만 바꿉니다. 필요하면 사용자에게 \`GA 일시정지\`를 요청하세요"
+      return 0
+    fi
+    # A2: R32b for every design the command can reach (the cwd's own is checked below).
+    if [ $DISC = 1 ] && [ -n "$T_GIT" ] && _ga_reach_active 1; then
+      _ga_ev_deny "$AW: $T_GIT 명령은 추적하지 않는 파일(docs/architecture/.state 포함)을 지우므로 설계 중에는 막혀 있습니다. 지울 파일을 직접 지정하거나 사용자에게 \`GA 일시정지\`를 요청하세요"
+      return 0
+    fi
   fi
+  [ $DISC = 0 ] || return 0
 
   # (b) writing under .state in any phase: a redirect into .state, a write command whose target
   # is .state, inside it or an ancestor of it (R32a), or the command mentions .state together

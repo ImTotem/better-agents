@@ -280,3 +280,113 @@ test_o1_globbed_redirect_into_state_denied() { local p r
     bx "$r" allow 'echo hi > "$LOG"'; bx "$r" allow 'echo hi > out.txt'; bx "$r" allow 'npm test 2>&1 | tee test.log'
     bx "$r" allow 'echo hi > build/*.log'
   done; }
+
+# --- remaining-problems fix: A internal/env/git clean for every reachable design, B relative targets after a cd ---
+outer() { # PHASE -> P, a checkout (P/.git) with no design of its own, holding the design root P/proj
+  local p; p=$(mktemp -d); mkdir -p "$p/.git" "$p/proj"; ga --root "$p/proj" init >/dev/null; set_state "$p/proj" ".phase=\"$1\""; echo "$p"; }
+# A1: internal commands and adapter hook scripts are denied in every Bash command, with or without a design.
+test_a1_internal_calls_denied_from_nested_repo_and_parent() { local p r v o c
+  for p in iterating implement; do
+    r=$(nested file "$p"); v=$r/vendor/lib
+    for c in 'ga --root ../.. user-command --text-file F' 'cd ../.. && ga user-command --text-file F' 'ga --root=../.. user-command --text-file F' \
+             'ga --root ../.. gate bash --command ls' "echo '{}' | bash $PLUGIN/adapters/claude-code/hook.sh user-prompt"; do
+      bx "$v" deny "$c"; done
+    o=$(outer "$p")
+    bx "$o" deny "ga --root $o/proj user-command --text-file F"; bx "$o" deny 'ga --root proj user-command --text-file F'
+    bx "$o" deny 'cd proj && ga user-command --text-file F'
+  done; }
+test_a1_internal_calls_denied_without_any_design() { local r out
+  r=$(mk_project)
+  bx "$r" deny 'ga user-command --text-file F'; bx "$r" deny 'x=$(ga hook stop)'; bx "$r" deny 'ga gate stop'
+  bx "$r" deny 'bash plugins/x/adapters/codex/hook.sh pre-bash'
+  out=$(cd "$r" && ga gate bash --command 'ga user-command --text-file F'); assert_contains "$out" "ga 내부 명령"
+  bx "$r" allow 'ga status'; bx "$r" allow 'ga verify'; bx "$r" allow 'git clean -fdx'; bx "$r" allow 'GA_RUNNERS_DIR=/tmp/x ga verify'; }
+test_a1_internal_calls_denied_when_paused() { local r v
+  r=$(nested file iterating); v=$r/vendor/lib; set_state "$r" '.paused=true'
+  bx "$v" deny 'ga --root ../.. user-command --text-file F'; bx "$r" deny 'ga user-command --text-file F'; }
+# A2: GA_*/PATH around ga and git clean are denied for a design reached by ga --root, git -C, cd or a write target.
+test_a2_env_and_git_clean_denied_from_nested_repo() { local k p r v c
+  for k in file dir; do
+    for p in iterating implement; do
+      r=$(nested $k "$p"); v=$r/vendor/lib
+      for c in 'GA_RUNNERS_DIR=/tmp/x ga --root ../.. verify' 'PATH=/tmp/evil:$PATH ga --root ../.. verify' 'GA_ROOT=../.. GA_RUNNERS_DIR=/tmp/x ga verify' \
+               'cd ../.. && GA_RUNNERS_DIR=/tmp/x ga verify' 'git -C ../.. clean -fdx' 'cd ../.. && git clean -fdx' 'git -C .. -C .. clean -fdx' \
+               'git --work-tree=../.. clean -fdx' 'git -C ../../src stash -u'; do
+        bx "$v" deny "$c"; done
+      # the nested repository's own clean does not reach the design's .state
+      bx "$v" allow 'git clean -fdx'; bx "$v" allow 'GA_RUNNERS_DIR=/tmp/x ga verify'; bx "$v" allow 'git -C ../.. status'; bx "$v" allow 'ga --root ../.. verify'
+    done
+  done; }
+test_a2_env_and_git_clean_denied_from_parent_dir() { local p o
+  for p in iterating implement; do
+    o=$(outer "$p")
+    bx "$o" deny 'git clean -fdx'; bx "$o" deny 'git clean -fd proj'; bx "$o" deny "git -C $o/proj clean -fdx"; bx "$o" deny 'cd proj && git clean -fdx'
+    bx "$o" deny "GA_RUNNERS_DIR=/tmp/x ga --root $o/proj verify"; bx "$o" deny 'PATH=/tmp/evil:$PATH ga --root proj verify'
+    bx "$o" allow 'git status'; bx "$o" allow 'ls -la'; bx "$o" allow "ga --root $o/proj verify"
+  done; }
+test_a2_git_clean_below_cwd_bounds() { local o
+  # a design in a nested repository below the cwd: git clean does not enter it unless forced twice
+  o=$(outer implement); mkdir -p "$o/proj/.git"
+  bx "$o" allow 'git clean -fdx'; bx "$o" deny 'git clean -ffdx'; bx "$o" deny 'git clean -f -f -d'
+  # a paused design does not count
+  o=$(outer implement); set_state "$o/proj" '.paused=true'; bx "$o" allow 'git clean -fdx'
+  o=$(outer iterating); : >"$o/proj/docs/architecture/.state/PAUSED"; bx "$o" allow 'git clean -fdx'
+  # git clean from a sibling directory does not reach the design
+  o=$(outer implement); mkdir -p "$o/web"; bx "$o/web" allow 'git clean -fdx'; }
+test_a2_paused_design_not_reached() { local r v
+  r=$(nested file implement); v=$r/vendor/lib; set_state "$r" '.paused=true'
+  bx "$v" allow 'git -C ../.. clean -fdx'; bx "$v" allow 'GA_RUNNERS_DIR=/tmp/x ga --root ../.. verify'; bx "$v" allow 'cd ../.. && git clean -fdx'; }
+# B1: after a cd to a known directory, a relative target is resolved there and its design's rules apply.
+test_b1_nested_repo_cd_then_relative_target_denied() { local k p r v
+  for k in file dir; do
+    for p in iterating implement; do
+      r=$(nested $k "$p"); v=$r/vendor/lib; mkdir -p "$v/sub"
+      bx "$v" deny 'cd . && rm -rf ../../docs/architecture/.state'; bx "$v" deny 'cd sub && rm -rf ../../../docs'
+      bx "$v" deny 'cd sub && echo {} > ../../../docs/architecture/.state/state.json'
+      bx "$v" deny 'cd sub && rm -rf ../../../d*'; bx "$v" deny 'pushd sub && rm -rf ../../../docs/architecture'
+    done
+    r=$(nested $k iterating); v=$r/vendor/lib
+    bx "$v" deny 'cd . && echo x > ../../src/main.c'; bx "$v" deny 'cd . && cp x ../../src/a.c'
+    bx "$v" allow 'cd . && echo x >> ../../docs/architecture/notes.md'; bx "$v" allow 'cd . && rm -f foo.o'
+  done; }
+# B1: a cd that may not apply to the segments after it (( ), $( ), pipe, &, ;, !, bash -c, popd)
+# leaves the earlier directories as candidates; in a plain && chain the destination replaces them.
+test_b1_cd_that_may_not_apply_keeps_cwd() { local r v w c
+  r=$(nested file implement); v=$r/vendor/lib
+  for c in '(cd /usr && ls) && rm -rf ../../docs/architecture/.state' 'false && cd sub; rm -rf ../../docs' '! cd /nonexistent && rm -rf ../../docs' \
+           'bash -c "cd /usr" && rm -rf ../../docs' 'cd /usr | true && rm -rf ../../docs' 'cd /usr & rm -rf ../../docs' \
+           'x=$(cd /usr && pwd) && rm -rf ../../docs' 'pushd /usr && popd && rm -rf ../../docs' '(cd /usr); cd ../.. && rm -rf docs'; do
+    bx "$v" deny "$c"; done
+  r=$(phase iterating); mkdir -p "$r/.git"; w=$r/.claude/worktrees/w; mkdir -p "$w/sub" "$w/build"; echo 'gitdir: ../../../.git/worktrees/w' >"$w/.git"
+  for c in 'cd build && cp app ../bin/' 'cd build && cmake .. && make' 'cd sub && rm -f ../x.o' 'cd build && make 2>&1 && cp a.out ../dist/'; do
+    bx "$w" allow "$c"; done; }
+test_b1_nested_repo_cd_brownfield_mapping() { local r v
+  r=$(nested file skeleton brownfield); seed_map "$r" src/new.c new; v=$r/vendor/lib
+  bx "$v" deny 'cd . && echo x > ../../src/main.c'; bx "$v" allow 'cd . && echo x > ../../src/new.c'; }
+# B2: after a cd to an unknown directory, every active design above the cwd (also past .git)
+# protects its .state from a relative target; its phase write rules do not apply.
+test_b2_unknown_cd_ancestor_state_protected() { local k r v w
+  for k in file dir; do
+    r=$(nested $k implement); v=$r/vendor/lib
+    bx "$v" deny 'cd "$D" && rm -rf ../../docs/architecture/.state'; bx "$v" deny 'cd "$D" && rm -rf docs'
+    bx "$v" deny 'cd "$D" && echo {} > docs/architecture/.state/state.json'; bx "$v" deny 'cd "$D" && rm -rf ../*'
+    bx "$v" allow 'cd "$D" && rm -f out.txt'; bx "$v" allow 'cd "$D" && echo x > build.log'
+  done
+  r=$(phase iterating); mkdir -p "$r/.git"; w=$r/.claude/worktrees/w; mkdir -p "$w"; echo 'gitdir: ../../../.git/worktrees/w' >"$w/.git"
+  bx "$w" deny 'cd "$D" && rm -rf ../../../docs'; bx "$w" deny 'cd "$D" && rm -rf docs/architecture/.state'
+  bx "$w" allow 'cd "$D" && rm -f out.txt'; bx "$w" allow 'cd "$D" && echo x > src/a.c'
+  set_state "$r" '.paused=true'; bx "$w" allow 'cd "$D" && rm -rf ../../../docs'; }
+# B3: $PWD and ${PWD} in a target stand for the current directory.
+test_b3_pwd_targets_resolved() { local r v
+  r=$(phase implement); mkdir -p "$r/build"
+  bx "$r" deny 'rm -rf "$PWD/docs"'; bx "$r" deny 'rm -rf ${PWD}/docs/architecture'; bx "$r" deny 'rm -rf "$PWD"'; bx "$r" deny 'echo {} > "$PWD/docs/architecture/.state/state.json"'
+  bx "$r" allow 'rm -rf "$PWD/build"'; bx "$r" allow 'echo x > "${PWD}/build/out.log"'; bx "$r" allow 'cd build && rm -rf "$PWD/obj"'
+  bx "$r" deny 'cd build && rm -rf "$PWD/../docs"'
+  r=$(nested file implement); v=$r/vendor/lib
+  bx "$v" deny 'rm -rf "$PWD/../../docs"'; bx "$v" deny 'cd "$D" && rm -rf "$PWD/../../docs"'; bx "$v" allow 'rm -rf "$PWD/build"'; }
+# Regression guard: ordinary commands stay allowed.
+test_b_regression_guard_allowed() { local r w c
+  r=$(phase implement); mkdir -p "$r/build" "$r/src"
+  for c in 'cd build && rm -f *.o' 'cd src && make' 'rm -f *.o' 'cp "$src" "$dst"'; do bx "$r" allow "$c"; done
+  r=$(phase iterating); mkdir -p "$r/.git"; w=$r/.claude/worktrees/w; mkdir -p "$w/sub"; echo 'gitdir: ../../../.git/worktrees/w' >"$w/.git"
+  for c in 'rm -rf build' 'echo x > src/a.c' 'cd sub && echo x > a.txt' 'cd "$D" && rm -f out.txt'; do bx "$w" allow "$c"; done; }
