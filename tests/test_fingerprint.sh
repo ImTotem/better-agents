@@ -12,15 +12,15 @@ test_fp_recorded_after_ga_write() { r=$(proj); p=$(fpfile "$r"); rm -f "$p"; ass
   assert_eq "$(cd -P "$r" && pwd -P)" "$(jq -r .root "$p")"; assert_eq 0 "$(fpcheck "$r")"; }
 test_fp_none_before_any_write_rc2() { r=$(mk_project); mkdir -p "$r/docs/architecture/.state"; echo '{}' >"$r/docs/architecture/.state/state.json"; assert_eq 2 "$(fpcheck "$r")"; }
 test_fp_mismatch_after_direct_edit() { r=$(proj); assert_eq 0 "$(fpcheck "$r")"
-  set_state "$r" '.phase="skeleton"'; assert_eq 1 "$(fpcheck "$r")"; }
+  tamper_state "$r" '.phase="skeleton"'; assert_eq 1 "$(fpcheck "$r")"; }
 test_fp_ledger_direct_edit_detected() { r=$(proj); sd=$r/docs/architecture/.state
   echo '{"items":[],"x":1}' >"$sd/ledger.json"; assert_eq 1 "$(fpcheck "$r")"
   uc "$r" 'GA 상태승인' >/dev/null; assert_eq 0 "$(fpcheck "$r")"
   echo '{"ts":"t"}' >>"$sd/approvals.jsonl"; assert_eq 1 "$(fpcheck "$r")"; }
-test_fp_user_accept_rebaselines() { r=$(proj); set_state "$r" '.phase="skeleton"'; assert_eq 1 "$(fpcheck "$r")"
+test_fp_user_accept_rebaselines() { r=$(proj); tamper_state "$r" '.phase="skeleton"'; assert_eq 1 "$(fpcheck "$r")"
   out=$(uc "$r" 'GA 상태승인'); assert_eq allow "$(dec "$out")"; assert_eq 0 "$(fpcheck "$r")"
   assert_eq 상태승인 "$(tail -n1 "$r/docs/architecture/.state/approvals.jsonl" | jq -r .point)"; }
-test_fp_accept_trailing_text_blocked() { r=$(proj); set_state "$r" '.phase="skeleton"'
+test_fp_accept_trailing_text_blocked() { r=$(proj); tamper_state "$r" '.phase="skeleton"'
   out=$(uc "$r" 'GA 상태승인 지금'); assert_eq block "$(dec "$out")"; assert_eq 1 "$(fpcheck "$r")"; }
 test_fp_accept_with_unreadable_state_blocked() { r=$(proj); echo 'not json' >"$r/docs/architecture/.state/state.json"
   assert_eq block "$(dec "$(uc "$r" 'GA 상태승인')")"; }
@@ -37,11 +37,11 @@ test_fp_usercmd_failure_keeps_fingerprint_consistent() { r=$(proj); assert_eq 0 
   out=$(uc "$r" "GA 일시정지
 GA 아무거나"); assert_eq block "$(dec "$out")"; assert_eq 0 "$(fpcheck "$r")"
   # a rolled-back 상태승인 must not re-baseline a tampered state
-  set_state "$r" '.round=9'; assert_eq 1 "$(fpcheck "$r")"
+  tamper_state "$r" '.round=9'; assert_eq 1 "$(fpcheck "$r")"
   out=$(uc "$r" "GA 상태승인
 GA 아무거나"); assert_eq block "$(dec "$out")"; assert_eq 1 "$(fpcheck "$r")"; }
 test_fp_usercmd_success_records() { r=$(proj); uc "$r" 'GA 일시정지' >/dev/null; assert_eq 0 "$(fpcheck "$r")"; }
-test_fp_usercmd_does_not_rebaseline_tampering() { r=$(proj); set_state "$r" '.round=9'; uc "$r" 'GA 일시정지' >/dev/null
+test_fp_usercmd_does_not_rebaseline_tampering() { r=$(proj); tamper_state "$r" '.round=9'; uc "$r" 'GA 일시정지' >/dev/null
   assert_eq 1 "$(fpcheck "$r")"; }
 test_fp_missing_sha_tools_fail_closed() { r=$(proj); rc=0; err=$( ( load_ga; PATH=/nonexistent; ga_fp_check "$r" ) 2>&1 ) || rc=$?
   rc2=0; err2=$( ( load_ga; PATH=/nonexistent; ga_fp_record "$r" ) 2>&1 ) || rc2=$?
@@ -50,3 +50,15 @@ test_fp_reinit_records_fresh_fingerprint() { r=$(proj); ga --root "$r" add assum
   rm -rf "$r/docs/architecture/.state"; ga --root "$r" init >/dev/null; assert_eq 0 "$(fpcheck "$r")"; }
 test_fp_unwritable_data_dir_warns() { r=$(proj); f=$(mktemp); rc=0; err=$( ( export GA_DATA_DIR=$f/sub; load_ga; ga_fp_record "$r" ) 2>&1 ) || rc=$?
   [ "$rc" = 1 ] || _fail "rc=$rc"; assert_contains "$err" "경고"; assert_contains "$err" "GA_DATA_DIR"; }
+# P3: while the fingerprint mismatches, every state-writing command refuses; reads and GA lines still work.
+test_fp_mismatch_refuses_state_writes() { local r sd c out rc l0
+  r=$(proj); sd=$r/docs/architecture/.state; ga --root "$r" add assumption <"$FIX/asm.json" >/dev/null
+  tamper_state "$r" '.x = 1'; l0=$(cat "$sd/ledger.json")
+  for c in 'add assumption' 'update ASM-1' 'ask Q-1' 'resolve ASM-1 --source-type code --ref a.c:1' render verify enforce 'dispute FND-1 --evidence x'; do
+    rc=0; out=$(echo '{"statement":"x"}' | GA_HARNESS=claude-code ga --root "$r" $c 2>&1) || rc=$?
+    [ "$rc" = 3 ] || _fail "ga $c: rc=$rc"; assert_contains "$out" "GA 상태승인"
+  done
+  assert_eq "$l0" "$(cat "$sd/ledger.json")"; [ ! -e "$r/.claude/settings.local.json" ] || _fail "enforce ran"
+  ga --root "$r" status >/dev/null; ga --root "$r" check >/dev/null
+  assert_eq allow "$(dec "$(uc "$r" 'GA 일시정지')")"; assert_eq 1 "$(fpcheck "$r")"
+  uc "$r" 'GA 상태승인' >/dev/null; ga --root "$r" add assumption <"$FIX/asm.json" >/dev/null; assert_eq 0 "$(fpcheck "$r")"; }

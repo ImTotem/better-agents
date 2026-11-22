@@ -14,13 +14,6 @@ test_write_korean_space_path() { r=$(phase skeleton brownfield); seed_map "$r" "
 test_write_private_tmp_alias() { r=$(phase inputs); alias_path="/private${r#/private}"; assert_eq deny "$(dec "$(ga gate write --path "$alias_path/src/a.c")")"; assert_eq allow "$(dec "$(ga gate write --path "$alias_path/docs/architecture/x.md")")"; }
 test_write_corrupt_state_denies() { r=$(phase inputs); echo '{bad' >"$r/docs/architecture/.state/state.json"; out=$(ga gate write --path "$r/src/a.c"); assert_eq deny "$(dec "$out")"; assert_contains "$out" "state.json"; }
 test_write_implement_allows() { r=$(phase implement); assert_eq allow "$(dec "$(ga gate write --path "$r/src/a.c")")"; }
-test_bash_redirect_src_denied_inputs() { r=$(phase inputs); assert_eq deny "$(cd "$r" && dec "$(ga gate bash --command 'echo x > src/a.c')")"; }
-test_bash_redirect_devnull_allowed() { r=$(phase inputs); assert_eq allow "$(cd "$r" && dec "$(ga gate bash --command 'ls > /dev/null 2>&1')")"; }
-test_bash_internal_usercommand_denied_implement() { r=$(phase implement); assert_eq deny "$(cd "$r" && dec "$(ga gate bash --command 'ga user-command --text-file /tmp/p')")"; }
-test_bash_state_write_denied_implement() { r=$(phase implement); assert_eq deny "$(cd "$r" && dec "$(ga gate bash --command "jq . x > docs/architecture/.state/ledger.json")")"; }
-test_bash_ga_add_allowed_inputs() { r=$(phase inputs); assert_eq allow "$(cd "$r" && dec "$(ga gate bash --command "ga add question <<'EOF'
-{}
-EOF")")"; }
 test_stop_format_error_blocks_even_hook_active() { r=$(phase iterating); seed_ledger "$r" "$FIX/ledger_bad_asm.json"; assert_eq block "$(cd "$r" && dec "$(ga gate stop --hook-active true)")"; }
 test_stop_asked_question_allows() { r=$(phase inputs); seed_ledger "$r" "$FIX/ledger_asked_q.json"; assert_eq allow "$(cd "$r" && dec "$(ga gate stop)")"; }
 
@@ -41,107 +34,17 @@ test_write_unknown_phase_denies() { r=$(phase inputs); set_state "$r" '.phase="b
 test_write_missing_path_denies() { r=$(phase inputs); assert_eq deny "$(cd "$r" && dec "$(ga gate write)")"; }
 test_bash_no_state_allows() { r=$(mk_project); assert_eq allow "$(bash_dec "$r" 'rm -rf src')"; }
 test_bash_paused_allows() { r=$(phase inputs); set_state "$r" '.paused=true'; assert_eq allow "$(bash_dec "$r" 'rm -rf src')"; }
-test_bash_corrupt_state_denies_writes() { r=$(phase inputs); echo '{bad' >"$r/docs/architecture/.state/state.json"; out=$(cd "$r" && ga gate bash --command 'touch src/x'); assert_eq deny "$(dec "$out")"; assert_contains "$out" "state.json"; }
-test_bash_cp_denied_inputs() { r=$(phase inputs); assert_eq deny "$(bash_dec "$r" 'cp a b')"; }
-test_bash_git_checkout_denied_inputs() { r=$(phase inputs); assert_eq deny "$(bash_dec "$r" 'git checkout -- src/a.c')"; assert_eq deny "$(bash_dec "$r" 'git -C . stash')"; }
-test_bash_git_status_allowed_inputs() { r=$(phase inputs); assert_eq allow "$(bash_dec "$r" 'git status && git log --oneline')"; }
-test_bash_stderr_dup_only_allowed() { r=$(phase inputs); assert_eq allow "$(bash_dec "$r" 'ls nope 2>&1')"; assert_eq allow "$(bash_dec "$r" 'ls >&2')"; }
-test_bash_tmp_redirect_allowed() { r=$(phase inputs); assert_eq allow "$(bash_dec "$r" 'echo x > /tmp/ga-x')"; assert_eq allow "$(bash_dec "$r" 'echo x >> "$TMPDIR/ga-x"')"; }
-test_bash_arch_doc_redirect_allowed() { r=$(phase inputs); assert_eq allow "$(bash_dec "$r" 'echo x >> docs/architecture/architecture.md')"; }
-test_bash_state_redirect_denied_inputs() { r=$(phase inputs); assert_eq deny "$(bash_dec "$r" 'echo x > docs/architecture/.state/state.json')"; }
-test_bash_cd_state_then_redirect_denied() { r=$(phase implement); assert_eq deny "$(bash_dec "$r" 'cd docs/architecture/.state && echo x > ledger.json')"; }
-test_bash_state_read_allowed_implement() { r=$(phase implement); assert_eq allow "$(bash_dec "$r" 'cat docs/architecture/.state/ledger.json | jq .items')"; }
-test_bash_state_rm_denied_implement() { r=$(phase implement); assert_eq deny "$(bash_dec "$r" 'rm docs/architecture/.state/state.json')"; }
-test_bash_hook_sh_denied() { r=$(phase implement); assert_eq deny "$(bash_dec "$r" 'bash plugins/x/adapters/claude-code/hook.sh')"; }
-test_bash_internal_hook_denied_via_path() { r=$(phase implement); assert_eq deny "$(bash_dec "$r" 'echo hi; /opt/x/bin/ga hook foo')"; }
-test_bash_implement_allows_writes() { r=$(phase implement); assert_eq allow "$(bash_dec "$r" 'echo x > src/a.c && rm -f build/x')"; }
-test_bash_skeleton_allows_writes() { r=$(phase skeleton); assert_eq allow "$(bash_dec "$r" 'echo x > src/a.c')"; }
-test_bash_heredoc_body_not_scanned() { r=$(phase inputs); assert_eq allow "$(bash_dec "$r" "cat <<'EOF' >> docs/architecture/architecture.md
-a -> b > c
-rm -rf x
-EOF")"; }
-test_bash_heredoc_marker_line_redirect_scanned() { r=$(phase inputs); assert_eq deny "$(bash_dec "$r" "cat <<EOF > src/a.c
-hello
-EOF")"; }
-test_bash_after_heredoc_still_scanned() { r=$(phase inputs); assert_eq deny "$(bash_dec "$r" "cat <<EOF
-hello
-EOF
-rm src/a.c")"; }
-test_bash_heredoc_dash_tab_terminator() { r=$(phase inputs); assert_eq allow "$(bash_dec "$r" "cat <<-EOF
-	x > y
-	EOF
-ls")"; }
-test_bash_segment_split_denies_second() { r=$(phase inputs); assert_eq deny "$(bash_dec "$r" 'ls && touch src/a.c')"; assert_eq deny "$(bash_dec "$r" 'ls | tee src/a.c')"; assert_eq deny "$(bash_dec "$r" 'ls; mv a b')"; }
-test_bash_sed_i_denied_sed_n_allowed() { r=$(phase inputs); assert_eq deny "$(bash_dec "$r" "sed -i 's/a/b/' src/a.c")"; assert_eq allow "$(bash_dec "$r" "sed -n '1,3p' src/a.c")"; }
-test_bash_perl_pi_denied() { r=$(phase inputs); assert_eq deny "$(bash_dec "$r" "perl -pi -e 's/a/b/' src/a.c")"; assert_eq allow "$(bash_dec "$r" "perl -Mstrict -e 'print 1'")"; }
-test_bash_path_qualified_rm_denied() { r=$(phase inputs); assert_eq deny "$(bash_dec "$r" '/bin/rm src/a.c')"; assert_eq deny "$(bash_dec "$r" 'FOO=1 rm src/a.c')"; assert_eq deny "$(bash_dec "$r" 'sudo rm src/a.c')"; }
-test_bash_ga_public_path_form_allowed() { r=$(phase inputs); assert_eq allow "$(bash_dec "$r" '/x/core/bin/ga --root . add driver --json "{\"a\":\"b c\"}" | cat')"; }
-test_bash_ga_segment_redirect_src_denied_inputs() { r=$(phase inputs); assert_eq deny "$(bash_dec "$r" 'ga status > src/a.c')"; }
-test_bash_ga_segment_devnull_allowed_inputs() { r=$(phase inputs); assert_eq allow "$(bash_dec "$r" 'ga status > /dev/null')"; }
-test_bash_arith_shift_not_heredoc() { r=$(phase inputs); assert_eq deny "$(bash_dec "$r" 'echo $((1<<2))
-echo x > src/a.c')"; assert_eq deny "$(bash_dec "$r" 'echo $((1<<n))
-echo x > src/a.c')"; }
-test_bash_deny_reason_korean() { r=$(phase inputs); out=$(cd "$r" && ga gate bash --command 'rm src/a.c'); assert_contains "$out" "inputs"; assert_contains "$out" "GA 일시정지"; assert_contains "$out" "rm"; }
 test_gate_output_single_json_line_exit0() { r=$(phase inputs); out=$(cd "$r" && ga gate bash --command 'rm x'); assert_eq 1 "$(printf '%s\n' "$out" | wc -l | tr -d ' ')"; assert_status 0 ga gate write --path "$r/src/a.c"; }
 test_stop_no_state_allows() { r=$(mk_project); assert_eq allow "$(cd "$r" && dec "$(ga gate stop)")"; }
 test_stop_paused_allows() { r=$(phase iterating); seed_ledger "$r" "$FIX/ledger_bad_asm.json"; set_state "$r" '.paused=true'; assert_eq allow "$(cd "$r" && dec "$(ga gate stop)")"; }
-test_stop_reason_lists_errors_and_hint() { r=$(phase iterating); seed_ledger "$r" "$FIX/ledger_bad_asm.json"; out=$(cd "$r" && ga gate stop --hook-active false); assert_contains "$out" "ASM-1: "; assert_contains "$out" "ga add question"; }
+test_stop_reason_lists_errors_and_hint() { r=$(phase iterating); seed_ledger "$r" "$FIX/ledger_bad_asm.json"; out=$(cd "$r" && ga gate stop --hook-active false); assert_contains "$out" "ASM-1: "; assert_contains "$out" "ga_add, kind question"; }
 test_stop_unreadable_ledger_blocks() { r=$(phase inputs); echo 'garbage' >"$r/docs/architecture/.state/ledger.json"; assert_eq block "$(cd "$r" && dec "$(ga gate stop)")"; }
 test_stop_corrupt_state_allows() { r=$(phase inputs); echo '{bad' >"$r/docs/architecture/.state/state.json"; out=$(cd "$r" && ga gate stop); assert_eq allow "$(dec "$out")"; }
-# --- fix round 1 regressions (review probes) ---
-bd() { # PHASE EXPECTED CMD   (fresh project in that phase)
-  local r; r=$(phase "$1"); assert_eq "$2" "$(bash_dec "$r" "$3")"; }
-test_bash_c1_nocmd_redirects_denied_inputs() {
-  bd inputs deny '>src/a.c'; bd inputs deny '>>src/a.c'; bd inputs deny '2>src/a.c'
-  bd inputs deny 'X=1 >src/a.c'; bd inputs deny 'ls && >src/a.c'; bd inputs deny '(echo a; echo b) >src/a.c'; }
-test_bash_c1_nocmd_state_redirect_denied() {
-  bd implement deny '>docs/architecture/.state/ledger.json'; bd skeleton deny '>docs/architecture/.state/state.json'; }
-test_bash_c2_heredoc_tag_with_dash() {
-  bd inputs deny "cat <<'END-OF' > docs/architecture/a.md
-body
-END-OF
-rm src/main.c"
-  bd inputs deny "cat <<EOF-1 >/dev/null
-body
-EOF-1
-rm src/main.c"
-  bd implement deny "cat <<EOF-1 >/dev/null
-body
-EOF-1
-echo x > docs/architecture/.state/ledger.json"; }
-test_bash_c2_heredoc_in_quotes() {
-  bd inputs deny 'echo "a<<b" && cat <<EOF
-x
-EOF
-rm src/main.c'; }
-test_bash_i1_state_via_variable() {
-  bd implement deny 'L=docs/architecture/.state/ledger.json
-jq . "$L" > /tmp/l.json && mv /tmp/l.json "$L"'
-  bd implement deny 'L=docs/architecture/.state/ledger.json; cp /tmp/l.json $L'
-  bd skeleton deny 'L=docs/architecture/.state/state.json; cp /tmp/l.json $L'; }
 test_write_i2_case_alias_state_denied() {
   r=$(phase implement); assert_eq deny "$(dec "$(ga gate write --path "$r/docs/architecture/.STATE/ledger.json")")"
   assert_eq deny "$(dec "$(ga gate write --path "$r/docs/Architecture/.state/ledger.json")")"
   r=$(phase inputs); assert_eq deny "$(dec "$(ga gate write --path "$r/docs/architecture/.STATE/ledger.json")")"; }
 test_write_i2_case_alias_arch_doc_inputs_allowed() { r=$(phase inputs); assert_eq allow "$(dec "$(ga gate write --path "$r/docs/Architecture/x.md")")"; }
-test_bash_i2_case_alias_state_denied() {
-  bd implement deny 'echo x > docs/architecture/.STATE/ledger.json'; bd implement deny 'echo x > docs/Architecture/.state/ledger.json'; }
-test_bash_i3_glob_var_targets_denied() {
-  bd inputs deny 'echo x > docs/architecture/.s*/ledger.json'
-  bd implement deny 'echo x > docs/architecture/.s*/ledger.json'
-  bd implement deny 'S=.state; echo x > docs/architecture/$S/ledger.json'
-  bd inputs deny 'echo x > docs/architecture/$S/a.md'; }
-test_bash_i3_relative_after_cd_denied() {
-  bd inputs deny 'cd src && echo x > ../src/a.c'
-  bd implement deny 'cd docs/architecture && echo x > ../architecture/.state/ledger.json'; }
-test_bash_i3_tmpdir_var_override_denied() { bd inputs deny 'TMPDIR=src; echo x > $TMPDIR/a.c'; }
-test_bash_i3_tmpdir_still_allowed() { bd inputs allow 'echo x > "$TMPDIR/ga-x"'; }
-test_bash_i4_internal_via_subshell_denied() {
-  bd inputs deny '(ga user-command --text-file /tmp/p)'; bd inputs deny 'x=$(ga hook stop)'
-  bd inputs deny 'echo `ga hook stop`'; bd inputs deny "ga 'user-command' --text-file /tmp/p"
-  bd implement deny '(ga hook stop)'; }
-test_bash_i5_single_ampersand_splits() { bd inputs deny 'ls & rm src/main.c'; bd inputs deny 'sleep 1 &touch src/x'; }
-test_bash_i5_amp_redirects_not_split() { bd inputs allow 'ls nope 2>&1 && ls &>/dev/null'; }
 test_stop_limits_to_10_errors() {
   r=$(phase inputs)
   jq -n '{items:[range(1;16)|{id:"ASM-\(.)",kind:"assumption",round:1,phase_added:"inputs",iteration:null,status:"open",resolution:null,statement:"s",indirect_evidence:[],search_log:{code:"a",docs:"a",conversation:"a",web:"a"},alternatives:[{assumption:"x",reason:"y"}]}]}' | seed_ledger "$r" -
@@ -158,333 +61,145 @@ test_c1_in_runner_stop_allows() { local r; r=$(phase iterating); seed_ledger "$r
 test_i6_paused_marker_opens_gates() { local r; r=$(phase inputs); seed_ledger "$r" "$FIX/ledger_bad_asm.json"; : >"$r/docs/architecture/.state/PAUSED"
   assert_eq allow "$(dec "$(ga gate write --path "$r/src/a.c")")"; assert_eq allow "$(bash_dec "$r" 'rm -rf src')"
   assert_eq allow "$(dec "$(cd "$r" && ga gate stop)")"; }
-test_i6_corrupt_state_bash_read_only_allowed() { local r c out; r=$(phase inputs); echo '{"phase":' >"$r/docs/architecture/.state/state.json"
-  for c in 'ls -la' 'git status' 'cat docs/architecture/.state/state.json' 'git log --oneline | head'; do assert_eq allow "$(bash_dec "$r" "$c")"; done
-  out=$(cd "$r" && ga gate bash --command 'rm src/main.c'); assert_eq deny "$(dec "$out")"; assert_contains "$out" "GA 일시정지"; assert_contains "$out" "state.json"
-  assert_eq deny "$(bash_dec "$r" 'echo x > src/a.c')"; assert_eq deny "$(bash_dec "$r" 'echo {} > docs/architecture/.state/state.json')"; }
 test_i6_corrupt_state_write_denied_with_recovery() { local r out; r=$(phase inputs); echo '{bad' >"$r/docs/architecture/.state/state.json"
   out=$(ga gate write --path "$r/src/a.c"); assert_eq deny "$(dec "$out")"; assert_contains "$out" "GA 일시정지"; assert_contains "$out" "복원"; }
-# I7 (R32a,b): .state itself or any ancestor is protected in every phase; git clean is denied.
-test_i7_state_ancestor_writes_denied_every_phase() { local p
-  for p in implement skeleton; do
-    bd $p deny 'rm -rf docs/architecture'; bd $p deny 'rm -rf docs'; bd $p deny 'mv docs/architecture docs/old'; bd $p deny 'rm -rf .'
-    bd $p deny 'cp -r /tmp/x/ docs/architecture'; bd $p deny 'cp /tmp/f.json docs/architecture/.stat?/state.json'
-    bd $p deny 'tee docs/architecture/.st*/state.json < /tmp/f.json'; bd $p deny 'rm -rf docs/*'; bd $p deny 'mkdir docs/architecture/.state/.lock'
-    bd $p allow 'rm -rf build'; bd $p allow 'cp src/a.c src/b.c'; bd $p allow 'mv docs/notes.md docs/old-notes.md'
-  done; }
-test_i7_git_clean_denied_every_phase() { bd implement deny 'git clean -fdx'; bd skeleton deny 'git clean -fd'; bd inputs deny 'git -C . clean -x'; bd implement allow 'git status'
-  bd implement deny 'git stash -u'; bd implement allow 'git stash'; }
-test_i7_git_checkout_restore_state_ancestor_denied() {
-  bd implement deny 'git checkout HEAD~3 -- docs'; bd implement deny 'git restore --source=other docs/architecture'; bd implement deny 'git checkout other -- .'
-  bd implement allow 'git checkout -b feature'; bd implement allow 'git checkout main'; bd implement allow 'git restore src/a.c'; }
-bfs() { # EXPECTED CMD : brownfield skeleton, MAP-1 src/new.c (new)
-  local r; r=$(phase skeleton brownfield); seed_map "$r" src/new.c new; assert_eq "$1" "$(bash_dec "$r" "$2")"; }
-test_i7_brownfield_skeleton_bash_uses_mapping() {
-  bfs deny 'echo hacked > src/main.c'; bfs deny "sed -i '' 's/0/1/' src/main.c"; bfs deny 'cp /tmp/x src/main.c'
-  bfs deny 'mv src/main.c src/old.c'; bfs deny 'tee src/main.c < /dev/null'; bfs deny 'truncate -s 0 src/main.c'; bfs deny 'echo x > $D/a.c'
-  bfs allow 'echo x > src/new.c'; bfs allow 'cp /tmp/x src/new.c'; bfs allow 'echo x >> docs/architecture/notes.md'; bfs allow 'ls > /tmp/out'
-  bfs allow "sed -i '' 's/a/b/' src/new.c"; bfs allow 'truncate -s 0 src/new.c'; bfs allow 'ls src'; bfs allow 'rm -f /tmp/ga-build-*'; bfs deny 'rm -f src/*.o'; }
-# I8 (R33c): internal hook scripts of any adapter are not callable from Bash.
-test_i8_any_adapter_hook_denied() { bd implement deny 'bash /opt/p/adapters/codex/hook.sh pre-bash'; bd inputs deny 'plugins/x/adapters/opencode/hook.sh stop'; }
-# I9 (R34b): GA_* / PATH assignments around a ga invocation are denied.
-test_i9_env_override_around_ga_denied() { local c
-  for c in 'GA_RUNNERS_DIR=/tmp/r ga verify' 'GA_TEST_MODE=1 GA_RUNNERS_DIR=/tmp/r ga verify' 'export GA_TEST_MODE=1; ga verify' \
-           'env GA_ROOT=/x ga status' 'PATH=/tmp/evil:$PATH ga verify' 'export PATH=/tmp/evil:$PATH && ga verify' 'GA_IN_RUNNER=1 /x/bin/ga gate stop'; do
-    bd implement deny "$c"; bd inputs deny "$c"; done
-  bd implement allow 'PATH=./node_modules/.bin:$PATH npm test'; bd inputs allow 'ga verify'; bd inputs allow 'ga --root . status --json'; }
 # I9 (R34d): the plugin itself is write-protected while a design is active.
 test_i9_plugin_root_write_denied() { local r; r=$(phase implement)
   assert_eq deny "$(cd "$r" && dec "$(ga gate write --path "$PLUGIN/core/lib/gates.sh")")"
-  assert_eq deny "$(bash_dec "$r" "echo x > $PLUGIN/core/verifier/runners/claude.json")"
-  assert_eq deny "$(bash_dec "$r" "cp /tmp/x $PLUGIN/core/verifier/runners/claude.json")"
-  assert_eq deny "$(bash_dec "$r" "sed -i '' s/a/b/ $PLUGIN/core/lib/gates.sh")"
   set_state "$r" '.paused=true'; assert_eq allow "$(cd "$r" && dec "$(ga gate write --path "$PLUGIN/core/lib/gates.sh")")"; }
-# R35-2: heredoc bodies fed to a shell or interpreter are scanned like command lines.
-test_r35_heredoc_to_shell_scanned() {
-  bd inputs deny "bash <<'EOF'
-rm -rf src
-EOF"
-  bd inputs deny 'sh <<EOF
-echo x > src/a.c
-EOF'
-  bd inputs deny 'cat <<EOF | bash
-rm -rf src
-EOF'
-  bd inputs deny "python3 - <<'EOF'
-import os
-EOF
-python3 x.py > src/a.c"
-  bd inputs allow "cat <<'EOF' > docs/architecture/x.md
-rm -rf src
-EOF"; }
-test_r35_shell_c_and_eval_scanned() { bd inputs deny 'bash -c "rm -rf src"'; bd inputs deny "sh -c 'echo x > src/a.c'"; bd inputs deny "eval 'rm -rf src'"; bd inputs allow 'bash -c "ls -la"'; }
 
-# --- targeted fix wave: N1 false denies, N2 nested repo, O1 globbed redirects ---
-bx() { # DIR EXPECTED CMD   (gate run with cwd DIR; names the command on failure)
-  local got; got=$(bash_dec "$1" "$3"); [ "$got" = "$2" ] || _fail "[$3] in ${1##*/}: expected $2 got $got"; }
-# N1: variable and glob targets that cannot reach .state are not .state targets (cwd = root).
-test_n1_var_glob_targets_allowed() { local p r c
-  for p in implement skeleton; do
-    r=$(phase $p); mkdir -p "$r/src" "$r/build"
-    for c in 'rm -f *.o' 'rm -rf "$tmp"' 'tmp=$(mktemp -d) && rm -rf "$tmp"' "sed -i '' 's/a/b/' *.c" 'mkdir -p "$OUT"' \
-             'mkdir -p "$(dirname "$f")"' 'cp "$src" "$dst"' 'mv *.txt build/' 'for f in src/*.c; do sed -i "" "s/a/b/" "$f"; done' \
-             'cd build && rm -f *.o' 'cp ../x .' 'rm -rf build/*' 'rm -rf src/{a,b}.o' 'cp src/*.c build/'; do
-      bx "$r" allow "$c"; done
-  done; }
-test_n1_state_reaching_targets_still_denied() { local p r c
-  for p in implement skeleton; do
-    r=$(phase $p); mkdir -p "$r/build"
-    for c in 'rm -rf *' 'rm -rf ./*' 'rm -rf d*' 'rm -rf docs/a*' 'rm -rf docs' 'rm -rf docs/architecture' 'mv docs/architecture x' \
-             'cp ../docs .' 'rm -rf docs/*/.state' 'rm -rf $X/architecture' 'rm -f "$D"/.state/x' 'rm -rf D?CS' 'rm -rf {build,docs}' \
-             'rm -rf docs/{a,b}*/.s*' 'rm -rf docs/**' 'rm -rf "$D"/*' 'cd build && rm -rf *' 'cd build && rm -rf ../d*' \
-             'cp -t . ../docs' 'cp -R /tmp/x/ docs' 'mv /tmp/x/.STATE docs/architecture/' 'install -d -m 000 x docs' \
-             'rm -rf build/*/../../docs' 'rm -rf ../*' 'echo x > build/*/../../docs/a*/.s*/state.json'; do
-      bx "$r" deny "$c"; done
-  done; }
-# N1 (d): cp/mv/ln/install into an existing directory write <dir>/<basename of each source>.
-test_n1_copy_into_existing_dir_classifies_written_path() { local r
-  r=$(phase implement)
-  bx "$r" allow 'cp -r /tmp/x docs/architecture'; bx "$r" allow 'cp -r /tmp/x docs'; bx "$r" allow 'ln -s ../x .'
-  bx "$r" deny 'cp -r /tmp/x/ docs/architecture'; bx "$r" deny 'cp -R /tmp/.state docs/architecture'; bx "$r" deny 'cp -rT /tmp/x docs'
-  bx "$r" deny 'cp -r /tmp/x/. docs/architecture'; bx "$r" deny 'cp "$S" docs/architecture/'; }
-# N2: from a nested repository (cwd inside it) the design is found from the write targets.
-nested() { # GITKIND(file|dir) PHASE [MODE] -> design root with vendor/lib as a nested repo
-  local r; r=$(phase "$2" ${3:-greenfield}); mkdir -p "$r/.git" "$r/src" "$r/vendor/lib"
-  if [ "$1" = file ]; then echo 'gitdir: ../../.git/modules/lib' >"$r/vendor/lib/.git"; else mkdir -p "$r/vendor/lib/.git"; fi
-  echo "$r"; }
-test_n2_nested_repo_targets_use_outer_design() { local k r v
-  for k in file dir; do
-    r=$(nested $k iterating); v=$r/vendor/lib
-    bx "$v" deny 'rm -rf ../../docs/architecture/.state'; bx "$v" deny 'echo x > ../../src/main.c'
-    bx "$v" deny "cp x $r/src/a.c"; bx "$v" deny 'cd ../.. && echo x > src/main.c'
-    bx "$v" allow 'make'; bx "$v" allow 'rm -f foo.o && echo x > build.log'; bx "$v" allow 'echo x > /tmp/ga-x'
-    bx "$v" allow 'echo x >> ../../docs/architecture/notes.md'
-    r=$(nested $k implement); v=$r/vendor/lib
-    bx "$v" deny 'rm -rf ../../docs/architecture/.state'; bx "$v" deny 'rm -rf ../../docs'; bx "$v" deny 'rm -rf ../../d*'
-    bx "$v" deny 'echo {} > ../../docs/a*/.s*/state.json'; bx "$v" deny 'cd ../.. && rm -rf docs'; bx "$v" deny 'rm -rf ../..'
-    bx "$v" deny 'rm -rf ../../..'
-    bx "$v" allow 'echo x > ../../src/main.c'; bx "$v" allow 'rm -f ../../build/*.o'; bx "$v" allow 'make'
-  done; }
-test_n2_nested_repo_brownfield_and_pause() { local r v
-  r=$(nested file skeleton brownfield); seed_map "$r" src/new.c new; v=$r/vendor/lib
-  bx "$v" deny 'echo x > ../../src/main.c'; bx "$v" allow 'echo x > ../../src/new.c'; bx "$v" deny 'rm -f ../../src/*.o'
-  bx "$v" allow 'echo x > local.c'
-  r=$(nested dir iterating); v=$r/vendor/lib; set_state "$r" '.paused=true'
-  bx "$v" allow 'echo x > ../../src/main.c'; bx "$v" allow 'rm -rf ../../src'; }
-# O1: a globbed redirect is classified like a command target (text, then the glob walk toward .state).
-test_o1_globbed_redirect_into_state_denied() { local p r
-  for p in implement skeleton; do
-    r=$(phase $p)
-    bx "$r" deny 'echo {} > d*/a*/.s*/approvals.jsonl'; bx "$r" deny 'echo {} > docs/a*/.s*/state.json'
-    bx "$r" deny 'echo {} >> D?CS/*/.st?te/ledger.json'
-    bx "$r" allow 'echo hi > "$LOG"'; bx "$r" allow 'echo hi > out.txt'; bx "$r" allow 'npm test 2>&1 | tee test.log'
-    bx "$r" allow 'echo hi > build/*.log'
-  done; }
+# --- gate redesign (spec 5.5): shell commands run inside the OS sandbox, effects are checked afterwards ---
+# The helpers call the gates as the Claude Code hook does (GA_HARNESS=claude-code). A managed-settings
+# file on the test machine stays out of the isolation check.
+export GA_TEST_MANAGED_SETTINGS=/nonexistent/ga-managed-settings.json
+enforced() { # PHASE [MODE] -> design root initialized with the Claude Code isolation settings
+  local r; r=$(mk_project "${2:-greenfield}"); GA_HARNESS=claude-code ga --root "$r" init >/dev/null; set_state "$r" ".phase=\"$1\""; echo "$r"; }
+gb() { (cd "$1" && GA_HARNESS=claude-code ga gate bash --command "$2"); }                 # ROOT CMD
+gw() { GA_HARNESS=claude-code ga gate write --path "$1"; }                                # PATH (cwd = session dir)
+gs() { (cd "$1" && GA_HARNESS=claude-code ga gate stop --hook-active "${2:-false}"); }    # ROOT [HOOK_ACTIVE]
+notice() { jq -r '.notice // ""' <<<"$1"; }
+uc() { local f; f=$(mktemp); printf '%s' "$2" >"$f"; ga --root "$1" user-command --text-file "$f"; }
 
-# --- remaining-problems fix: A internal/env/git clean for every reachable design, B relative targets after a cd ---
-outer() { # PHASE -> P, a checkout (P/.git) with no design of its own, holding the design root P/proj
-  local p; p=$(mktemp -d); mkdir -p "$p/.git" "$p/proj"; ga --root "$p/proj" init >/dev/null; set_state "$p/proj" ".phase=\"$1\""; echo "$p"; }
-# A1: internal commands and adapter hook scripts are denied in every Bash command, with or without a design.
-test_a1_internal_calls_denied_from_nested_repo_and_parent() { local p r v o c
-  for p in iterating implement; do
-    r=$(nested file "$p"); v=$r/vendor/lib
-    for c in 'ga --root ../.. user-command --text-file F' 'cd ../.. && ga user-command --text-file F' 'ga --root=../.. user-command --text-file F' \
-             'ga --root ../.. gate bash --command ls' "echo '{}' | bash $PLUGIN/adapters/claude-code/hook.sh user-prompt"; do
-      bx "$v" deny "$c"; done
-    o=$(outer "$p")
-    bx "$o" deny "ga --root $o/proj user-command --text-file F"; bx "$o" deny 'ga --root proj user-command --text-file F'
-    bx "$o" deny 'cd proj && ga user-command --text-file F'
-  done; }
-test_a1_internal_calls_denied_without_any_design() { local r out
-  r=$(mk_project)
-  bx "$r" deny 'ga user-command --text-file F'; bx "$r" deny 'x=$(ga hook stop)'; bx "$r" deny 'ga gate stop'
-  bx "$r" deny 'bash plugins/x/adapters/codex/hook.sh pre-bash'
-  out=$(cd "$r" && ga gate bash --command 'ga user-command --text-file F'); assert_contains "$out" "ga 내부 명령"
-  bx "$r" allow 'ga status'; bx "$r" allow 'ga verify'; bx "$r" allow 'git clean -fdx'; bx "$r" allow 'GA_RUNNERS_DIR=/tmp/x ga verify'; }
-test_a1_internal_calls_denied_when_paused() { local r v
-  r=$(nested file iterating); v=$r/vendor/lib; set_state "$r" '.paused=true'
-  bx "$v" deny 'ga --root ../.. user-command --text-file F'; bx "$r" deny 'ga user-command --text-file F'; }
-# A2: GA_*/PATH around ga and git clean are denied for a design reached by ga --root, git -C, cd or a write target.
-test_a2_env_and_git_clean_denied_from_nested_repo() { local k p r v c
-  for k in file dir; do
-    for p in iterating implement; do
-      r=$(nested $k "$p"); v=$r/vendor/lib
-      for c in 'GA_RUNNERS_DIR=/tmp/x ga --root ../.. verify' 'PATH=/tmp/evil:$PATH ga --root ../.. verify' 'GA_ROOT=../.. GA_RUNNERS_DIR=/tmp/x ga verify' \
-               'cd ../.. && GA_RUNNERS_DIR=/tmp/x ga verify' 'git -C ../.. clean -fdx' 'cd ../.. && git clean -fdx' 'git -C .. -C .. clean -fdx' \
-               'git --work-tree=../.. clean -fdx' 'git -C ../../src stash -u'; do
-        bx "$v" deny "$c"; done
-      # the nested repository's own clean does not reach the design's .state
-      bx "$v" allow 'git clean -fdx'; bx "$v" allow 'GA_RUNNERS_DIR=/tmp/x ga verify'; bx "$v" allow 'git -C ../.. status'; bx "$v" allow 'ga --root ../.. verify'
+# The bash gate never reads the command: blocking writes is the operating system's job.
+test_gate_bash_ignores_command_text() { local r p c
+  for p in inputs implement; do
+    r=$(enforced $p)
+    for c in 'rm -rf docs/architecture/.state' 'bash hook.sh user-prompt' 'git clean -fdx ..' "bash $PLUGIN/adapters/claude-code/hook.sh user-prompt" \
+             'echo x > src/a.c' 'ga user-command --text-file /tmp/f' 'GA_RUNNERS_DIR=/tmp/x ga verify' ''; do
+      [ "$(dec "$(gb "$r" "$c")")" = allow ] || _fail "[$c] in $p not allowed"
     done
-  done; }
-test_a2_env_and_git_clean_denied_from_parent_dir() { local p o
-  for p in iterating implement; do
-    o=$(outer "$p")
-    bx "$o" deny 'git clean -fdx'; bx "$o" deny 'git clean -fd proj'; bx "$o" deny "git -C $o/proj clean -fdx"; bx "$o" deny 'cd proj && git clean -fdx'
-    bx "$o" deny "GA_RUNNERS_DIR=/tmp/x ga --root $o/proj verify"; bx "$o" deny 'PATH=/tmp/evil:$PATH ga --root proj verify'
-    bx "$o" allow 'git status'; bx "$o" allow 'ls -la'; bx "$o" allow "ga --root $o/proj verify"
-  done; }
-test_a2_git_clean_below_cwd_bounds() { local o
-  # a design in a nested repository below the cwd: git clean does not enter it unless forced twice
-  o=$(outer implement); mkdir -p "$o/proj/.git"
-  bx "$o" allow 'git clean -fdx'; bx "$o" deny 'git clean -ffdx'; bx "$o" deny 'git clean -f -f -d'
-  # a paused design does not count
-  o=$(outer implement); set_state "$o/proj" '.paused=true'; bx "$o" allow 'git clean -fdx'
-  o=$(outer iterating); : >"$o/proj/docs/architecture/.state/PAUSED"; bx "$o" allow 'git clean -fdx'
-  # git clean from a sibling directory does not reach the design
-  o=$(outer implement); mkdir -p "$o/web"; bx "$o/web" allow 'git clean -fdx'; }
-test_a2_paused_design_not_reached() { local r v
-  r=$(nested file implement); v=$r/vendor/lib; set_state "$r" '.paused=true'
-  bx "$v" allow 'git -C ../.. clean -fdx'; bx "$v" allow 'GA_RUNNERS_DIR=/tmp/x ga --root ../.. verify'; bx "$v" allow 'cd ../.. && git clean -fdx'; }
-# B1: after a cd to a known directory, a relative target is resolved there and its design's rules apply.
-test_b1_nested_repo_cd_then_relative_target_denied() { local k p r v
-  for k in file dir; do
-    for p in iterating implement; do
-      r=$(nested $k "$p"); v=$r/vendor/lib; mkdir -p "$v/sub"
-      bx "$v" deny 'cd . && rm -rf ../../docs/architecture/.state'; bx "$v" deny 'cd sub && rm -rf ../../../docs'
-      bx "$v" deny 'cd sub && echo {} > ../../../docs/architecture/.state/state.json'
-      bx "$v" deny 'cd sub && rm -rf ../../../d*'; bx "$v" deny 'pushd sub && rm -rf ../../../docs/architecture'
-    done
-    r=$(nested $k iterating); v=$r/vendor/lib
-    bx "$v" deny 'cd . && echo x > ../../src/main.c'; bx "$v" deny 'cd . && cp x ../../src/a.c'
-    bx "$v" allow 'cd . && echo x >> ../../docs/architecture/notes.md'; bx "$v" allow 'cd . && rm -f foo.o'
-  done; }
-# B1: a cd that may not apply to the segments after it (( ), $( ), pipe, &, ;, !, bash -c, popd)
-# leaves the earlier directories as candidates; in a plain && chain the destination replaces them.
-test_b1_cd_that_may_not_apply_keeps_cwd() { local r v w c
-  r=$(nested file implement); v=$r/vendor/lib
-  for c in '(cd /usr && ls) && rm -rf ../../docs/architecture/.state' 'false && cd sub; rm -rf ../../docs' '! cd /nonexistent && rm -rf ../../docs' \
-           'bash -c "cd /usr" && rm -rf ../../docs' 'cd /usr | true && rm -rf ../../docs' 'cd /usr & rm -rf ../../docs' \
-           'x=$(cd /usr && pwd) && rm -rf ../../docs' 'pushd /usr && popd && rm -rf ../../docs' '(cd /usr); cd ../.. && rm -rf docs'; do
-    bx "$v" deny "$c"; done
-  r=$(phase iterating); mkdir -p "$r/.git"; w=$r/.claude/worktrees/w; mkdir -p "$w/sub" "$w/build"; echo 'gitdir: ../../../.git/worktrees/w' >"$w/.git"
-  for c in 'cd build && cp app ../bin/' 'cd build && cmake .. && make' 'cd sub && rm -f ../x.o' 'cd build && make 2>&1 && cp a.out ../dist/'; do
-    bx "$w" allow "$c"; done; }
-test_b1_nested_repo_cd_brownfield_mapping() { local r v
-  r=$(nested file skeleton brownfield); seed_map "$r" src/new.c new; v=$r/vendor/lib
-  bx "$v" deny 'cd . && echo x > ../../src/main.c'; bx "$v" allow 'cd . && echo x > ../../src/new.c'; }
-# B2: after a cd to an unknown directory, every active design above the cwd (also past .git)
-# protects its .state from a relative target; its phase write rules do not apply.
-test_b2_unknown_cd_ancestor_state_protected() { local k r v w
-  for k in file dir; do
-    r=$(nested $k implement); v=$r/vendor/lib
-    bx "$v" deny 'cd "$D" && rm -rf ../../docs/architecture/.state'; bx "$v" deny 'cd "$D" && rm -rf docs'
-    bx "$v" deny 'cd "$D" && echo {} > docs/architecture/.state/state.json'; bx "$v" deny 'cd "$D" && rm -rf ../*'
-    bx "$v" allow 'cd "$D" && rm -f out.txt'; bx "$v" allow 'cd "$D" && echo x > build.log'
   done
-  r=$(phase iterating); mkdir -p "$r/.git"; w=$r/.claude/worktrees/w; mkdir -p "$w"; echo 'gitdir: ../../../.git/worktrees/w' >"$w/.git"
-  bx "$w" deny 'cd "$D" && rm -rf ../../../docs'; bx "$w" deny 'cd "$D" && rm -rf docs/architecture/.state'
-  bx "$w" allow 'cd "$D" && rm -f out.txt'; bx "$w" allow 'cd "$D" && echo x > src/a.c'
-  set_state "$r" '.paused=true'; bx "$w" allow 'cd "$D" && rm -rf ../../../docs'; }
-# B3: $PWD and ${PWD} in a target stand for the current directory.
-test_b3_pwd_targets_resolved() { local r v
-  r=$(phase implement); mkdir -p "$r/build"
-  bx "$r" deny 'rm -rf "$PWD/docs"'; bx "$r" deny 'rm -rf ${PWD}/docs/architecture'; bx "$r" deny 'rm -rf "$PWD"'; bx "$r" deny 'echo {} > "$PWD/docs/architecture/.state/state.json"'
-  bx "$r" allow 'rm -rf "$PWD/build"'; bx "$r" allow 'echo x > "${PWD}/build/out.log"'; bx "$r" allow 'cd build && rm -rf "$PWD/obj"'
-  bx "$r" deny 'cd build && rm -rf "$PWD/../docs"'
-  r=$(nested file implement); v=$r/vendor/lib
-  bx "$v" deny 'rm -rf "$PWD/../../docs"'; bx "$v" deny 'cd "$D" && rm -rf "$PWD/../../docs"'; bx "$v" allow 'rm -rf "$PWD/build"'; }
-# Regression guard: ordinary commands stay allowed.
-test_b_regression_guard_allowed() { local r w c
-  r=$(phase implement); mkdir -p "$r/build" "$r/src"
-  for c in 'cd build && rm -f *.o' 'cd src && make' 'rm -f *.o' 'cp "$src" "$dst"'; do bx "$r" allow "$c"; done
-  r=$(phase iterating); mkdir -p "$r/.git"; w=$r/.claude/worktrees/w; mkdir -p "$w/sub"; echo 'gitdir: ../../../.git/worktrees/w' >"$w/.git"
-  for c in 'rm -rf build' 'echo x > src/a.c' 'cd sub && echo x > a.txt' 'cd "$D" && rm -f out.txt'; do bx "$w" allow "$c"; done; }
+  assert_eq allow "$(dec "$(cd "$r" && GA_HARNESS=claude-code ga gate bash)")"; }
+test_gate_bash_denies_when_enforcement_inactive() { local r out s
+  r=$(phase inputs) # initialized without a harness: no isolation settings
+  out=$(gb "$r" ls); assert_eq deny "$(dec "$out")"
+  assert_contains "$out" ga_enforce; assert_contains "$out" "GA 일시정지"; assert_contains "$out" settings.local.json
+  r=$(enforced implement); s=$r/.claude/settings.local.json
+  jq '.sandbox.allowUnsandboxedCommands = true' "$s" >"$s.new"; mv "$s.new" "$s"
+  out=$(gb "$r" ls); assert_eq deny "$(dec "$out")"; assert_contains "$out" allowUnsandboxedCommands
+  rm -f "$s"; assert_eq deny "$(dec "$(gb "$r" ls)")"
+  # no harness named: the isolation cannot be checked
+  r=$(enforced implement); out=$(cd "$r" && env -u GA_HARNESS "$CORE/bin/ga" gate bash); assert_eq deny "$(dec "$out")"; assert_contains "$out" GA_HARNESS
+  # an unreadable state.json still counts as an active design
+  r=$(phase inputs); echo '{bad' >"$r/docs/architecture/.state/state.json"; assert_eq deny "$(dec "$(gb "$r" ls)")"; }
+test_gate_bash_allows_without_design_or_paused() { local r
+  r=$(mk_project); assert_eq allow "$(dec "$(gb "$r" 'rm -rf src')")"
+  assert_eq allow "$(dec "$(cd "$r" && env -u GA_HARNESS "$CORE/bin/ga" gate bash)")"
+  r=$(phase inputs); set_state "$r" '.paused=true'; assert_eq allow "$(dec "$(gb "$r" 'rm -rf src')")"
+  r=$(phase iterating); : >"$r/docs/architecture/.state/PAUSED"; assert_eq allow "$(dec "$(cd "$r" && env -u GA_HARNESS "$CORE/bin/ga" gate bash)")"
+  echo '{bad' >"$r/docs/architecture/.state/state.json"; assert_eq allow "$(dec "$(gb "$r" ls)")"; }
+test_gate_bash_speed() { local r t avg i
+  r=$(enforced implement)
+  TIMEFORMAT=%R
+  t=$( { time (cd "$r" && for i in $(seq 1 100); do GA_HARNESS=claude-code "$CORE/bin/ga" gate bash --command "echo $i > src/f$i.c" >/dev/null; done); } 2>&1 )
+  avg=$(awk -v t="$t" 'BEGIN { printf "%d", t * 1000 / 100 }')
+  echo "ga gate bash: ${avg} ms per command (100 commands in ${t} s)" >&2
+  [ "$avg" -lt 100 ] || _fail "bash gate too slow: ${avg} ms per command"
+  assert_eq allow "$(dec "$(gb "$r" 'echo x > src/a.c')")"; }
 
-# --- remaining fix round 2 ---
-wtree() { # PHASE -> worktree R/.claude/worktrees/w (a .git FILE, no design of its own) of design root R
-  local r w; r=$(phase "$1"); mkdir -p "$r/.git"; w=$r/.claude/worktrees/w; mkdir -p "$w/sub" "$w/build" "$w/src"
-  echo 'gitdir: ../../../.git/worktrees/w' >"$w/.git"; echo "$w"; }
-nodesign() { local d; d=$(mktemp -d); mkdir -p "$d/.git" "$d/src"; echo "$d"; } # a checkout without any design
-# R2#1: with no design reachable, only real invocations of ga user-command / ga gate are internal calls.
-test_r2_internal_mentions_allowed_without_design() { local d c
-  d=$(nodesign)
-  for c in 'git add plugins/grounded-arch/adapters/claude-code/hook.sh' 'cat plugins/grounded-arch/adapters/claude-code/hook.sh' \
-           'cat scripts/adapters/github/hook.sh' 'git commit -m "fix ga gate output"' 'grep -rn "user-command" plugins' \
-           'grep -rn "ga user-command" plugins' 'echo "see adapters/x/hook.sh" > notes.txt' "git commit -m 'refactor ga hook handling'"; do
-    bx "$d" allow "$c"; done; }
-test_r2_internal_invocations_denied_without_design() { local d c
-  d=$(nodesign)
-  for c in 'ga user-command --text-file /tmp/f' 'ga --root ../x user-command --text-file /tmp/f' 'ga --root "$X" user-command --text-file /tmp/f' \
-           'env ga gate bash --command x' "bash -c 'ga user-command --text-file f'" 'echo f | xargs ga user-command --text-file' \
-           '/opt/p/core/bin/ga gate stop' 'command ga gate stop' 'exec ga user-command --text-file f' 'nohup ga user-command --text-file f' \
-           'time ga gate stop' 'X=1 ga gate stop' 'sh -c "ga gate stop"' "eval 'ga user-command --text-file f'" 'ga --root=x gate stop'; do
-    bx "$d" deny "$c"; done; }
-test_r2_internal_text_with_design() { local r o
-  r=$(phase implement)
-  bx "$r" allow 'git commit -m "fix ga gate output"'; bx "$r" allow "cat $PLUGIN/adapters/claude-code/hook.sh"
-  bx "$r" deny 'git commit -m "fix ga user-command parsing"'; bx "$r" deny 'timeout 5 ga user-command --text-file f'
-  # a design reached through --root / cd keeps the text net for wrappers the parser does not know
-  o=$(outer implement)
-  bx "$o" deny 'timeout 5 ga --root proj user-command --text-file f'; bx "$o" deny 'cd proj && timeout 5 ga user-command --text-file f'
-  bx "$o" allow 'git commit -m "fix ga user-command parsing"'; }
-# R2#3: running a file named hook.sh is an internal call from any cwd; mentions are not.
-test_r2_relative_hook_sh_denied_everywhere() { local r d a c dir
-  a=$PLUGIN/adapters
-  r=$(phase implement); d=$(nodesign)
-  for dir in "$r" "$d" "$HOME"; do
-    for c in "cd $a/claude-code && bash hook.sh user-prompt < /tmp/f" "cd $a && sh claude-code/hook.sh user-prompt < /tmp/f" \
-             "cd $a/claude-code && ./hook.sh user-prompt" "cd $a/claude-code && source hook.sh user-prompt" "cd $a/claude-code && . ./hook.sh user-prompt" \
-             'env bash hook.sh user-prompt' 'echo x | xargs bash hook.sh' 'exec ./hook.sh stop' 'command bash hook.sh stop' 'bash -c "bash hook.sh user-prompt"' \
-             "eval './hook.sh user-prompt'" 'zsh hook.sh stop' 'dash hook.sh stop' 'bash -x hook.sh stop' 'bash -- hook.sh stop' 'nohup ./x/hook.sh stop'; do
-      bx "$dir" deny "$c"; done
-    for c in "cat $a/claude-code/hook.sh" "git add $a/claude-code/hook.sh" "grep -n jq $a/claude-code/hook.sh" 'cat hook.sh' 'git add adapters/claude-code/hook.sh'; do
-      bx "$dir" allow "$c"; done
+# G-write additions: protected paths in every phase while a design is active.
+test_gate_write_denies_settings_and_fp_store() { local r m w p dd
+  r=$(enforced implement); cd "$r"
+  for p in "$r/.claude/settings.local.json" "$r/.claude/settings.json" "$r/.claude/SETTINGS.local.json" "$r/.claude/settings.backup.json" \
+           "$HOME/.claude/settings.json" "$HOME/.claude/settings.local.json" "$HOME/.local/state/grounded-arch/x.json" \
+           "$r/docs/architecture/.state/state.json" "$PLUGIN/core/lib/gates.sh"; do
+    [ "$(dec "$(gw "$p")")" = deny ] || _fail "not denied: $p"
   done
-  # a symlink to a hook.sh runs it too
-  ln -s "$a/claude-code/hook.sh" "$d/h"; bx "$d" deny 'bash h user-prompt'; bx "$d" deny './h user-prompt'; bx "$d" allow 'cat h'; }
-# R2#4: git clean pathspec operands (.., ../proj, :/, :(top)) reach a sibling design.
-test_r2_git_clean_pathspec_reaches_design() { local o c
-  o=$(outer implement); mkdir -p "$o/web/build"
-  for c in 'git clean -fdx ..' 'git clean -fdx ../proj' 'git clean -fdx :/' 'git clean -fdx ":(top)"' "git clean -fdx ':/proj'" \
-           "git clean -fdx ':(top)proj'" 'git clean -fdx -- ..' 'cd .. && git clean -fdx proj'; do
-    bx "$o/web" deny "$c"; done
-  for c in 'git clean -fdx build/' 'git clean -fdx .' "git clean -fdx -e ../proj build" 'git clean -n build'; do bx "$o/web" allow "$c"; done
-  bx "$o" deny 'git clean -fdx proj'; bx "$o" allow 'git clean -fdx web/'; }
-# R2#5: BASH_ENV / ENV around ga can swap the runner.
-test_r2_bash_env_around_ga_denied() { local r c
-  r=$(phase implement)
-  for c in 'BASH_ENV=/tmp/x ga verify' 'ENV=/tmp/x ga verify' 'export BASH_ENV=/tmp/x; ga verify' 'env BASH_ENV=/tmp/x ga verify'; do bx "$r" deny "$c"; done
-  bx "$r" allow 'NODE_ENV=production npm test'; bx "$r" allow 'BASH_ENV=/tmp/x make'; }
-# R2 Minor: a cd applies to what follows it unless it may not run (subshell, pipe element, background,
-# after ||, &&-then-;, !, a compound command, a prefix like sudo, an unknown or missing directory).
-test_r2_cd_applies_plain_forms() { local w c
-  w=$(wtree iterating)
-  for c in 'cd build && make 2>&1 | tee ../build.log' 'cd build; cp app ../dist/' 'cd sub; rm -f ../x.o' 'cd build && make || cp err.log ../logs/' \
-           'cd sub && git commit -m "fix: handle a|b and (x)" && echo done > ../done.txt' 'cd build
-make > ../build.log'; do
-    bx "$w" allow "$c"; done; }
-test_r2_cd_that_may_not_run_keeps_cwd() { local r v c
-  r=$(nested file implement); v=$r/vendor/lib
-  for c in 'if false; then cd /usr; fi; rm -rf ../../docs' 'while false; do cd /usr; done; rm -rf ../../docs' 'f() { cd /usr; }; rm -rf ../../docs' \
-           'sudo cd /usr; rm -rf ../../docs' 'cd nonexistent-dir-x; rm -rf ../../docs' 'false && cd /usr; rm -rf ../../docs' \
-           'false || cd /usr; rm -rf ../../docs' 'CDPATH=/usr cd lib; rm -rf ../../docs' 'cd .\./.\. && rm -rf docs' 'cd ..\/.. && rm -rf docs' \
-           'true && cd /usr && ls; rm -rf ../../docs'; do
-    bx "$v" deny "$c"; done; }
-# R2 Minor: the B2 fallback matches path components, not substrings; quoted cd/popd words are not cds.
-test_r2_b2_components_and_quoted_cd_words() { local w r
-  w=$(wtree implement)
-  bx "$w" allow 'cd "$BUILD" && echo x > notes.architecture.md'; bx "$w" allow 'cd "$BUILD" && rm -f app.state.json'
-  bx "$w" deny 'cd "$BUILD" && rm -rf x/.state'; bx "$w" deny 'cd "$BUILD" && rm -rf docs/architecture'
-  r=$(phase skeleton brownfield); seed_map "$r" src/new.c new
-  bx "$r" allow 'git commit -m "drop popd from the script" && echo x > src/new.c'; bx "$r" allow 'git commit -m "cd into docs" && echo x > src/new.c'
-  bx "$r" deny 'cd src && echo x > ../src/main.c'; }
-# R2#2: the per-directory classification is bounded: many cds x many relative targets stay fast.
-r2_many() { # sets S2 (8 cds, then 20 relative targets) and S3 (8 lines of "cd ../X; rm -f <20 targets>")
-  local t="" i x; for i in $(seq 1 20); do t="$t f$i"; done
-  S2=$'cd a\ncd ../b\ncd ../c\ncd ../d\ncd ../e\ncd ../f\ncd ../g\ncd ../h\nrm -f'"$t"
-  S3=""; for x in a b c d e f g h; do S3="${S3}cd ../$x; rm -f$t"$'\n'; done; }
-test_r2_gate_latency_bounded() { local r d dir c s e st x
-  r2_many; r=$(phase implement); d=$(nodesign)
-  for dir in "$r" "$d"; do
-    for x in a b c d e f g h; do mkdir -p "$dir/$x"; done
-    for c in "$S2" "$S3"; do
-      st=$(mktemp); s=$(date +%s)
-      assert_eq allow "$(cd "$dir" && GA_GATE_STATS=$st ga gate bash --command "$c" | jq -r .decision)"
-      e=$(date +%s); [ $((e - s)) -lt 5 ] || _fail "gate took $((e - s)) s"
-      # deterministic bound: directory resolutions, design lookups and per-directory classifications
-      grep -q 'classify=' "$st" || _fail "no gate stats"
-      awk '{for (i = 1; i <= NF; i++) {split($i, kv, "="); v[kv[1]] = kv[2]}} END {exit !(v["canon"] <= 60 && v["lookup"] <= 60 && v["classify"] <= 200)}' "$st" \
-        || _fail "gate work not bounded: $(cat "$st")"
-    done
-  done; }
+  for p in "$r/.claude/commands/x.md" "$r/.claude/agents/a.md" "$r/src/a.c" "$r/settings.json" "$HOME/notes.txt"; do
+    [ "$(dec "$(gw "$p")")" = allow ] || _fail "denied: $p"
+  done
+  assert_contains "$(gw "$r/.claude/settings.local.json")" "GA 일시정지"
+  dd=$(mktemp -d); assert_eq deny "$(dec "$(GA_DATA_DIR=$dd gw "$dd/abc.json")")"
+  # a worktree design protects the main checkout's settings too
+  m=$(mk_project); w=$(mk_project); mkdir -p "$m/.git/worktrees/wt"; echo ../.. >"$m/.git/worktrees/wt/commondir"
+  echo "gitdir: $m/.git/worktrees/wt" >"$w/.git"; GA_HARNESS=claude-code ga --root "$w" init >/dev/null
+  assert_eq deny "$(cd "$w" && dec "$(gw "$m/.claude/settings.local.json")")"
+  assert_eq allow "$(cd "$w" && dec "$(gw "$m/.claude/commands/x.md")")"
+  # paused, or no design at the session: not protected
+  set_state "$r" '.paused=true'; assert_eq allow "$(dec "$(gw "$r/.claude/settings.local.json")")"
+  p=$(mk_project); assert_eq allow "$(cd "$p" && dec "$(gw "$HOME/.claude/settings.json")")"; }
+test_gate_write_follows_final_symlink() { local r
+  r=$(enforced implement)
+  ln -s "$r/docs/architecture/.state/ledger.json" "$r/docs/architecture/link.json"
+  ln -s "$HOME/.claude/settings.json" "$r/my-settings.json"
+  assert_eq deny "$(dec "$(cd "$r" && gw "$r/docs/architecture/link.json")")"
+  assert_eq deny "$(dec "$(cd "$r" && gw "$r/my-settings.json")")"
+  ln -s "$r/src/a.c" "$r/a-link.c"; assert_eq allow "$(dec "$(cd "$r" && gw "$r/a-link.c")")"; }
+test_gate_write_denied_while_fingerprint_mismatches() { local r out
+  r=$(enforced implement); assert_eq allow "$(dec "$(gw "$r/src/a.c")")"
+  tamper_state "$r" '.x = 1'
+  out=$(gw "$r/src/a.c"); assert_eq deny "$(dec "$out")"; assert_contains "$out" "GA 상태승인"
+  assert_eq deny "$(dec "$(gw "$r/docs/architecture/architecture.md")")"
+  uc "$r" 'GA 상태승인' >/dev/null; assert_eq allow "$(dec "$(gw "$r/src/a.c")")"; }
+
+# G-stop additions: file changes outside the phase allow-list and the state fingerprint.
+test_gate_stop_blocks_on_effect_violation() { local r out
+  r=$(enforced inputs); assert_eq allow "$(dec "$(gs "$r")")"
+  mkdir -p "$r/src"; echo 'int x;' >"$r/src/new.c"
+  out=$(gs "$r"); assert_eq block "$(dec "$out")"; assert_contains "$out" src/new.c
+  assert_eq block "$(dec "$(gs "$r" true)")" # the agent can revert it: keeps blocking
+  rm -f "$r/src/new.c"; assert_eq allow "$(dec "$(gs "$r")")"
+  echo x >>"$r/docs/architecture/architecture.md"; assert_eq allow "$(dec "$(gs "$r")")"; }
+test_gate_stop_blocks_on_fp_mismatch() { local r out
+  r=$(enforced implement); assert_eq allow "$(dec "$(gs "$r")")"
+  tamper_state "$r" '.x = 1'
+  out=$(gs "$r"); assert_eq block "$(dec "$out")"; assert_contains "$out" "GA 상태승인"
+  # only the user can fix it: once the agent was told, the next stop passes and the user sees a notice
+  out=$(gs "$r" true); assert_eq allow "$(dec "$out")"; assert_contains "$(notice "$out")" "GA 상태승인"
+  uc "$r" 'GA 상태승인' >/dev/null; out=$(gs "$r"); assert_eq allow "$(dec "$out")"; assert_eq "" "$(notice "$out")"; }
+test_gate_stop_takes_missing_snapshot_once() { local r out
+  r=$(enforced inputs); rm -f "$r/docs/architecture/.state/snapshot.json"; _fp_sync "$r"
+  mkdir -p "$r/src"; echo x >"$r/src/old.c" # made before any baseline existed: not judged
+  out=$(gs "$r"); assert_eq allow "$(dec "$out")"; assert_contains "$(notice "$out")" "파일 변경 기준"
+  [ -f "$r/docs/architecture/.state/snapshot.json" ] || _fail "no snapshot taken"
+  out=$(gs "$r"); assert_eq allow "$(dec "$out")"; assert_eq "" "$(notice "$out")"
+  echo y >"$r/src/new.c"; assert_eq block "$(dec "$(gs "$r")")"; }
+test_gate_stop_reports_missing_fingerprint() { local r out
+  r=$(enforced implement); rm -rf "$HOME/.local/state/grounded-arch"
+  out=$(gs "$r"); assert_eq allow "$(dec "$out")"; assert_contains "$(notice "$out")" "상태 지문"; assert_contains "$(notice "$out")" "GA 상태승인"; }
+
+# Read commands run inside the sandbox: they must not create anything under .state (not even a lock).
+test_read_commands_write_nothing() { local r sd c bad=""
+  r=$(enforced implement); sd=$r/docs/architecture/.state
+  chmod -R a-w "$sd"
+  for c in status 'status --json' check 'check --json' rule 'effect check'; do
+    (cd "$r" && ga $c >/dev/null 2>&1) || bad="$bad [$c]"
+  done
+  chmod -R u+w "$sd"
+  assert_eq "" "$bad"; [ ! -e "$sd/.lock" ] || _fail "lock dir created"; }
+test_cli_write_permission_error_names_mcp_tool() { local r sd out out2 out3 rc=0 rc2=0 rc3=0 s
+  use_fake_claude
+  r=$(enforced inputs); sd=$r/docs/architecture/.state; seed_ledger "$r" "$FIX/ledger_inputs_ready.json"
+  chmod -R a-w "$sd"; s=$SECONDS
+  out=$(ga --root "$r" add assumption <"$FIX/asm.json" 2>&1) || rc=$?
+  out2=$(ga --root "$r" render 2>&1) || rc2=$?
+  out3=$(ga --root "$r" verify 2>&1) || rc3=$? # refused before the panel runs
+  chmod -R u+w "$sd"
+  [ "$rc" != 0 ] || _fail "ga add succeeded"; [ "$rc2" != 0 ] || _fail "ga render succeeded"; [ "$rc3" != 0 ] || _fail "ga verify succeeded"
+  assert_contains "$out" ga_add; assert_contains "$out2" ga_render; assert_contains "$out3" ga_verify
+  [ $((SECONDS - s)) -lt 3 ] || _fail "took $((SECONDS - s)) s (lock retry loop or panel run?)"
+  assert_eq 0 "$(jq '[.items[] | select(.kind == "assumption")] | length' "$sd/ledger.json")"; [ ! -e "$sd/report.json" ] || _fail "report written"
+  [ ! -e "$sd/.lock" ] || _fail "lock left behind"
+  # the lock itself also reports the MCP tool (a folder that turns read-only after the probe)
+  out=$( ( GA_CORE=$CORE; . "$CORE/lib/common.sh"; GA_SUB=ask; chmod a-w "$sd"; ga_lock "$r" ) 2>&1 ) || true
+  chmod u+w "$sd"; assert_contains "$out" ga_ask; [ ! -e "$sd/.lock" ] || _fail "lock created"; }

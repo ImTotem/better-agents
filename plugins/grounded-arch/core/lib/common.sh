@@ -91,6 +91,27 @@ ga_write_json() { # FILE
   return 0
 }
 
+# The state folder cannot be written (the agent's shell runs inside the OS sandbox, which denies
+# it): name the MCP tool that does the same thing outside the sandbox.
+ga_mcp_hint() {
+  case "${GA_SUB:-}" in
+    init | add | update | ask | resolve | render | verify | enforce | dispute)
+      echo "셸에서는 설계 상태 폴더에 쓸 수 없습니다(OS 격리). 같은 일을 하는 MCP 도구 \`ga_${GA_SUB}\`를 쓰세요" ;;
+    *) echo "셸에서는 설계 상태 폴더에 쓸 수 없습니다(OS 격리). 상태를 바꾸는 일은 MCP 도구(ga_add, ga_update 등)로 하세요" ;;
+  esac
+}
+
+# State-writing commands stop here, before any work (ga verify runs the panel for minutes before it
+# writes), when the state folder cannot be written. The probe is a directory: never fingerprinted.
+ga_need_writable_state() {
+  local sd
+  [ -n "${GA_ROOT:-}" ] || return 0
+  sd=$GA_ROOT/docs/architecture/.state
+  [ -d "$sd" ] || return 0
+  if mkdir "$sd/.wcheck.$$" 2>/dev/null; then rmdir "$sd/.wcheck.$$"; return 0; fi
+  ga_die "ga: 설계 상태 폴더에 쓸 수 없습니다: $sd. $(ga_mcp_hint)" 2
+}
+
 # Reentrant within one process: only the outermost ga_lock creates the lock dir and only the
 # matching outermost ga_unlock removes it (GA_LOCK_DEPTH is deliberately not exported).
 GA_LOCK_DEPTH=0
@@ -100,8 +121,14 @@ ga_lock() { # ROOT
     GA_LOCK_DEPTH=$((GA_LOCK_DEPTH + 1))
     return 0
   fi
-  mkdir -p "$sd" || ga_die "ga: cannot create $sd" 2
+  mkdir -p "$sd" 2>/dev/null || ga_die "ga: $sd 를 만들 수 없습니다. $(ga_mcp_hint)" 2
   while ! mkdir "$sd/.lock" 2>/dev/null; do
+    # No lock dir there: not contention but a folder that cannot be written. Retried once, so a
+    # lock released between the two looks is not mistaken for that.
+    if [ ! -e "$sd/.lock" ]; then
+      mkdir "$sd/.lock" 2>/dev/null && break
+      [ -e "$sd/.lock" ] || ga_die "ga: 설계 상태 폴더에 쓸 수 없습니다: $sd. $(ga_mcp_hint)" 2
+    fi
     # A lock left by a killed ga (older than 120 s) is moved aside atomically, then retried.
     if [ -n "$(find "$sd/.lock" -maxdepth 0 -mmin +2 2>/dev/null)" ] &&
        mv "$sd/.lock" "$sd/.lock.stale.$$" 2>/dev/null; then

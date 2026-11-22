@@ -13,6 +13,9 @@ while [ -L "$_self" ]; do
 done
 PLUGIN_ROOT=$(cd -P "$(dirname "$_self")/../.." && pwd)
 GA=${GA_BIN:-$PLUGIN_ROOT/core/bin/ga}
+# The core asks this harness's adapter (adapters/claude-code/enforce.sh) about the OS isolation.
+GA_HARNESS=claude-code
+export GA_HARNESS
 
 event=${1:-}
 input=$(cat)
@@ -41,6 +44,7 @@ VERDICT=""
 V_DECISION=""
 V_REASON=""
 V_CONTEXT=""
+V_NOTICE=""
 
 # run_ga ARGS...: sets VERDICT (stdout), HOOK_ERR (first stderr line, if failed).
 run_ga() {
@@ -49,10 +53,16 @@ run_ga() {
   VERDICT=$("$GA" "$@" 2>"$errf") || rc=$?
   HOOK_ERR=$(head -n 1 "$errf")
   rm -f "$errf"
+  # The usual allow verdict needs no parsing (the bash gate runs before every shell command).
+  if [ $rc -eq 0 ] && [ "$VERDICT" = '{"decision":"allow","reason":""}' ]; then
+    V_DECISION=allow; V_REASON=""; V_CONTEXT=""; V_NOTICE=""
+    return 0
+  fi
   if [ $rc -eq 0 ] && printf '%s' "$VERDICT" | jq -e 'type == "object" and (.decision | type == "string")' >/dev/null 2>&1; then
     V_DECISION=$(printf '%s' "$VERDICT" | jq -r '.decision')
     V_REASON=$(printf '%s' "$VERDICT" | jq -r '.reason // ""')
     V_CONTEXT=$(printf '%s' "$VERDICT" | jq -r '.context // ""')
+    V_NOTICE=$(printf '%s' "$VERDICT" | jq -r '.notice // ""')
     return 0
   fi
   [ -n "$HOOK_ERR" ] || HOOK_ERR="종료 코드 $rc"
@@ -62,8 +72,8 @@ run_ga() {
 emit_deny() { # REASON
   jq -n --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'
 }
-emit_block() { # REASON
-  jq -n --arg r "$1" '{decision:"block",reason:$r}'
+emit_block() { # REASON [NOTICE]  (systemMessage: shown to the user)
+  jq -n --arg r "$1" --arg n "${2:-}" '{decision:"block",reason:$r} + (if $n == "" then {} else {systemMessage:$n} end)'
 }
 emit_context() { # EVENTNAME TEXT
   jq -n --arg e "$1" --arg c "$2" '{hookSpecificOutput:{hookEventName:$e,additionalContext:$c}}'
@@ -91,15 +101,18 @@ case "$event" in
     pre_gate gate write --path "$p"
     ;;
   pre-bash)
-    c=$(jqi '.tool_input.command')
-    [ -n "$c" ] || exit 0
-    pre_gate gate bash --command "$c"
+    # The command text is not passed: the OS sandbox decides what a command may write.
+    pre_gate gate bash
     ;;
   stop)
     active=$(jqi '.stop_hook_active')
     [ "$active" = true ] || active=false
     if run_ga gate stop --hook-active "$active"; then
-      [ "$V_DECISION" = block ] && emit_block "$V_REASON"
+      if [ "$V_DECISION" = block ]; then
+        emit_block "$V_REASON" "$V_NOTICE"
+      elif [ -n "$V_NOTICE" ]; then
+        jq -n --arg n "$V_NOTICE" '{systemMessage:$n}'
+      fi
     fi
     ;;
   user-prompt)

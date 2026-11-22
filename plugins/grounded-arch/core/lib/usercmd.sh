@@ -86,21 +86,58 @@ _uc_common() { # ROOT PHASE ROUND ITER
   rp=$(ga_report_path "$root")
   st=$(_ga_status_json "$root") || { _uc_fail "상태를 읽을 수 없습니다"; return 1; }
   if [ ! -f "$rp" ]; then
-    _uc_fail "검증 보고서가 없습니다. ga verify를 실행하세요"; bad=1
+    _uc_fail "검증 보고서가 없습니다. ga_verify를 실행하세요"; bad=1
   else
     if [ "$(printf '%s' "$st" | jq -r .report_fresh)" != true ]; then
-      _uc_fail "검증 이후 문서나 원장이 바뀌었습니다. ga verify를 다시 실행하세요"; bad=1
+      _uc_fail "검증 이후 문서나 원장이 바뀌었습니다. ga_verify를 다시 실행하세요"; bad=1
     elif ! jq -e --arg p "$phase" --argjson r "$round" --argjson i "$iter" \
         '.phase == $p and .round == $r and (if $p == "iterating" then .iteration == $i else true end)' "$rp" >/dev/null 2>&1; then
-      _uc_fail "검증 보고서가 다른 단계·라운드·반복의 것입니다 ($(jq -r '"보고서: phase=\(.phase) round=\(.round) iteration=\(.iteration)"' "$rp"); 현재: phase=$phase round=$round iteration=$iter). ga verify를 다시 실행하세요"; bad=1
+      _uc_fail "검증 보고서가 다른 단계·라운드·반복의 것입니다 ($(jq -r '"보고서: phase=\(.phase) round=\(.round) iteration=\(.iteration)"' "$rp"); 현재: phase=$phase round=$round iteration=$iter). ga_verify를 다시 실행하세요"; bad=1
     fi
     if [ "$(printf '%s' "$st" | jq -r .panel_ok)" != true ]; then
-      _uc_fail "검증 패널이 모두 정상 종료하지 않았습니다 (panel_ok=false). ga verify를 다시 실행하세요"; bad=1
+      _uc_fail "검증 패널이 모두 정상 종료하지 않았습니다 (panel_ok=false). ga_verify를 다시 실행하세요"; bad=1
     fi
     ids=$(jq -r '[.findings[] | select(((.disposition.type == "user_rejected") or (.disposition.type == "disputed" and .disposition.verdict == "accept")) | not) | .id] | join(", ")' "$rp" 2>/dev/null)
-    if [ -n "$ids" ]; then _uc_fail "처리되지 않은 검증 지적이 있습니다: $ids (GA 기각 FND-n 또는 ga dispute 후 GA 판정)"; bad=1; fi
+    if [ -n "$ids" ]; then _uc_fail "처리되지 않은 검증 지적이 있습니다: $ids (GA 기각 FND-n 또는 ga_dispute 후 GA 판정)"; bad=1; fi
   fi
   [ "$bad" = 0 ]
+}
+
+# G-approval additions (spec 5.5): the state fingerprint matches and no file outside the phase
+# allow-list changed. Both were measured once before the message's lines ran (_uc_prepass).
+_uc_effect_fp() {
+  local bad=0
+  case "$GA_UC_FP_RC" in
+    0) ;;
+    1) _uc_fail "$(ga_fp_mismatch_reason)"; bad=1 ;;
+    2) _uc_fail "상태 지문 기록이 없어 설계 상태가 ga 밖에서 바뀌지 않았는지 확인할 수 없습니다. docs/architecture/.state/를 확인한 뒤 'GA 상태승인'을 먼저 입력하세요"; bad=1 ;;
+    *) _uc_fail "shasum이나 sha256sum이 없어 상태 지문을 확인할 수 없습니다. 둘 중 하나를 설치한 뒤 다시 승인하세요"; bad=1 ;;
+  esac
+  case "$GA_UC_EFF_RC" in
+    0) ;;
+    1) _uc_fail "이 단계에서 바뀌면 안 되는 파일이 바뀌었습니다: $(ga_effect_list "$GA_UC_EFF_OUT"). 에이전트에게 되돌리게 하거나 직접 되돌린 뒤 다시 승인하세요"; bad=1 ;;
+    *) _uc_fail "바뀐 파일을 확인하지 못했습니다(ga effect check 실패). docs/architecture/.state/snapshot.json을 확인하세요"; bad=1 ;;
+  esac
+  [ "$bad" = 0 ]
+}
+
+# Before any line of a message with an approval runs: measure the fingerprint (before anything here
+# writes the state folder) and the changed files. P6: a design without a file baseline gets one now,
+# kept even when the approval is refused (it is taken before the backup).
+_uc_prepass() { # ROOT LINES
+  local root=$1
+  GA_UC_FP_RC=0; GA_UC_EFF_RC=0; GA_UC_EFF_OUT=""; GA_UC_NOTE=""
+  [ "$GA_UC_STATE_OK" = 1 ] || return 0
+  printf '%s\n' "$2" | grep -Eq '^GA[[:space:]]+승인([[:space:]]|$)' || return 0
+  ga_fp_check "$root" >/dev/null 2>&1 || GA_UC_FP_RC=$?
+  GA_UC_EFF_OUT=$(ga_effect_check "$root" 2>/dev/null) || GA_UC_EFF_RC=$?
+  if [ "$GA_UC_EFF_RC" = 2 ] && [ ! -f "$(ga_effect_snapshot_path "$root")" ] && ga_effect_snapshot "$root" >/dev/null 2>&1; then
+    GA_UC_EFF_RC=0
+    GA_UC_NOTE="참고: 파일 변경 기준(snapshot)이 없어서 지금 프로젝트 상태를 기준으로 기록했습니다. 그 전의 변경은 검사하지 않았습니다."
+    # The baseline outlives a refused message, whose pending fingerprint record is dropped.
+    [ "$GA_UC_FP_RC" != 0 ] || ga_fp_record "$root" >/dev/null 2>&1
+  fi
+  return 0
 }
 
 _uc_append_approval() { # ROOT POINT FROM TO ROUND ITER QUOTE
@@ -132,6 +169,7 @@ _uc_approve() { # ROOT POINT QUOTE
   fi
   rec_iter=$iter
   _uc_common "$root" "$phase" "$round" "$iter" || bad=1
+  _uc_effect_fp || bad=1
   case "$point" in
     입력)
       ids=$(_uc_ids "$root" '[.items[] | select(.round == $r and .kind == "decision") | .id]' --argjson r "$round")
@@ -167,8 +205,8 @@ _uc_approve() { # ROOT POINT QUOTE
         if ! _uc_isint "$n" || [ "$n" -lt 1 ]; then _uc_fail "기존 코드 대응표(mapping)가 1개 이상 있어야 합니다"; bad=1; fi
         case "$(_ga_status_json "$root" | jq -r .build_ok)" in
           true) ;;
-          false) _uc_fail "빌드 확인이 실패했습니다. 'GA 테스트명령 <명령>'을 확인하거나 고친 뒤 ga verify를 다시 실행하세요"; bad=1 ;;
-          *) _uc_fail "빌드 확인 결과가 없습니다. 'GA 테스트명령 <명령>'으로 빌드·테스트 명령을 지정한 뒤 ga verify를 실행하세요"; bad=1 ;;
+          false) _uc_fail "빌드 확인이 실패했습니다. 'GA 테스트명령 <명령>'을 확인하거나 고친 뒤 ga_verify를 다시 실행하세요"; bad=1 ;;
+          *) _uc_fail "빌드 확인 결과가 없습니다. 'GA 테스트명령 <명령>'으로 빌드·테스트 명령을 지정한 뒤 ga_verify를 실행하세요"; bad=1 ;;
         esac
       fi
       ;;
@@ -182,29 +220,29 @@ _uc_approve() { # ROOT POINT QUOTE
       _uc_isint "$newcount" || return 2
       ga_state_set "$root" ".phase = \"iterating\" | .iteration = 1 | .iteration_count = $newcount" || return 2
       iter=1; icount=$newcount
-      next="반복 1의 드라이버별로 결정을 기록하고 ga verify를 실행한 뒤 'GA 승인 반복'을 입력하세요."
+      next="반복 1의 드라이버별로 결정을 기록하고 ga_verify를 실행한 뒤 'GA 승인 반복'을 입력하세요."
       ;;
     반복)
       if [ "$iter" -lt "$icount" ]; then
         to=iterating; next_iter=$((iter + 1))
         ga_state_set "$root" ".iteration = $next_iter" || return 2
         iter=$next_iter
-        next="반복 ${iter}의 결정을 기록하고 ga verify를 실행한 뒤 'GA 승인 반복'을 입력하세요."
+        next="반복 ${iter}의 결정을 기록하고 ga_verify를 실행한 뒤 'GA 승인 반복'을 입력하세요."
       else
         to=design-review
         ga_state_set "$root" '.phase = "design-review"' || return 2
-        next="설계 전체를 검토하고 ga verify를 실행한 뒤 'GA 승인 설계'를 입력하세요."
+        next="설계 전체를 검토하고 ga_verify를 실행한 뒤 'GA 승인 설계'를 입력하세요."
       fi
       ;;
     설계)
       to=skeleton
       ga_state_set "$root" '.phase = "skeleton"' || return 2
-      next="코드 대응표를 기록하고 뼈대를 만든 뒤 ga verify를 실행하고 'GA 승인 뼈대'를 입력하세요."
+      next="코드 대응표를 기록하고 뼈대를 만든 뒤 ga_verify를 실행하고 'GA 승인 뼈대'를 입력하세요."
       ;;
     뼈대)
       to=implement
       ga_state_set "$root" '.phase = "implement"' || return 2
-      next="이제 구현할 수 있습니다. 대응표에 없는 경로는 쓰기 전에 ga add mapping으로 기록하세요."
+      next="이제 구현할 수 있습니다. 대응표에 없는 경로는 쓰기 전에 ga_add(kind mapping)로 기록하세요."
       ;;
   esac
   ga_effect_snapshot "$root" || return 2
@@ -324,7 +362,7 @@ _uc_apply() {
       ga_state_set "$root" ".phase = \"iterating\" | .iteration_count = $ic | .iteration = $ic" || return 2
       ga_effect_snapshot "$root" || return 2
       _uc_sum "기록됨: 되돌리기 / 단계 ${phase}→iterating (반복 $ic/$ic)"
-      GA_UC_NEXT="새 반복의 드라이버를 high로 지정하고 결정을 기록한 뒤 ga verify, 'GA 승인 반복'을 진행하세요."
+      GA_UC_NEXT="새 반복의 드라이버를 high로 지정하고 결정을 기록한 뒤 ga_verify, 'GA 승인 반복'을 진행하세요."
       ;;
     새라운드)
       _uc_noargs 새라운드 "$rest" || return 1
@@ -338,12 +376,14 @@ _uc_apply() {
       ga_state_set "$root" '.phase = "inputs" | .round += 1 | .iteration = 0 | .iteration_count = 0' || return 2
       ga_effect_snapshot "$root" || return 2
       _uc_sum "기록됨: 새 라운드 $(ga_state_get "$root" .round) / 단계 implement→inputs"
-      GA_UC_NEXT="새 라운드의 입력(드라이버, 제약, 가정)을 정리하고 ga verify, 'GA 승인 입력'을 진행하세요."
+      GA_UC_NEXT="새 라운드의 입력(드라이버, 제약, 가정)을 정리하고 ga_verify, 'GA 승인 입력'을 진행하세요."
       ;;
     상태승인)
       _uc_noargs 상태승인 "$rest" || return 1
       _uc_append_approval "$root" 상태승인 "" "" 0 0 "$quote" || return 2
       ga_fp_mark "$root" force
+      # A later GA 승인 in the same message sees the accepted state.
+      [ "$GA_UC_FP_RC" = 3 ] || GA_UC_FP_RC=0
       _uc_sum "기록됨: 상태 지문을 현재 상태 파일 기준으로 다시 기록했습니다"
       ;;
     테스트명령)
@@ -362,6 +402,7 @@ _uc_apply() {
 }
 
 GA_UC_BDIR=""; GA_UC_ROOT=""; GA_UC_LOCKED=0; GA_UC_RESTORE=0; GA_UC_STATE_OK=1
+GA_UC_FP_RC=0; GA_UC_EFF_RC=0; GA_UC_EFF_OUT=""; GA_UC_NOTE="" # set by _uc_prepass
 
 # Restores the backup (when GA_UC_RESTORE=1), fully releases the lock, removes the backup dir.
 # Safe to call more than once; used both on exit paths and for the normal finish.
@@ -427,6 +468,7 @@ cmd_user_command() {
   trap '_uc_abort' EXIT
   ga_lock "$root"
   GA_UC_LOCKED=1
+  _uc_prepass "$root" "$lines"
   if ! _uc_backup "$root" "$bdir"; then
     ga_die "ga: 상태 백업 실패" 2
   fi
@@ -452,13 +494,13 @@ EOF
   if [ -n "$GA_UC_FAILS" ]; then
     _uc_abort
     trap - EXIT
-    _uc_out block "명령을 적용하지 않았습니다 (아무것도 바뀌지 않았습니다):"$'\n'"$GA_UC_FAILS" ""
+    _uc_out block "명령을 적용하지 않았습니다 (아무것도 바뀌지 않았습니다):"$'\n'"$GA_UC_FAILS${GA_UC_NOTE:+$'\n'$GA_UC_NOTE}" ""
     return 0
   fi
   GA_UC_RESTORE=0
   _uc_abort
   trap - EXIT
-  ctx=$GA_UC_SUM
+  ctx=${GA_UC_NOTE:+$GA_UC_NOTE$'\n'}$GA_UC_SUM
   [ -n "$GA_UC_NEXT" ] && ctx=$ctx$'\n'"다음: $GA_UC_NEXT"
   _uc_out allow "" "$ctx"
   return 0

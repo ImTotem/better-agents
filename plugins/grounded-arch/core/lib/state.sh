@@ -86,7 +86,7 @@ cmd_init() {
     fi
   fi
 
-  mkdir -p "$root/docs/architecture" "$sd" || ga_die "ga: 디렉터리를 만들 수 없습니다" 2
+  mkdir -p "$root/docs/architecture" "$sd" 2>/dev/null || ga_die "ga: 디렉터리를 만들 수 없습니다. $(ga_mcp_hint)" 2
   ga_lock "$root"
   [ -f "$root/docs/architecture/architecture.md" ] || cp "$GA_CORE/templates/architecture.md" "$root/docs/architecture/architecture.md"
   echo '{"items":[]}' | ga_write_json "$sd/ledger.json"

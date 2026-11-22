@@ -70,3 +70,15 @@ test_i8_context_warns_per_panel_runner() { local r d t; r=$(mk_project); ga --ro
 test_r35_context_lists_earlier_round_open_assumption() { local r; r=$(mk_project); ga --root "$r" init >/dev/null
   seed_ledger "$r" "$FIX/ledger_inputs_open_asm.json"; set_state "$r" '.round=2'
   assert_contains "$(cd "$r" && ga context session-start)" "미해결 항목: ASM-1"; }
+# Gate redesign: one line with the OS isolation state (and why it is off) and the state fingerprint.
+test_session_context_isolation_and_fingerprint() { local r t
+  export GA_TEST_MANAGED_SETTINGS=/nonexistent/ga-managed-settings.json
+  r=$(mk_project); GA_HARNESS=claude-code ga --root "$r" init >/dev/null
+  t=$(cd "$r" && GA_HARNESS=claude-code ga context session-start)
+  assert_contains "$t" "격리: 켜짐"; assert_contains "$t" "상태 지문: 일치"
+  assert_eq 1 "$(printf '%s\n' "$t" | grep -c '격리: .*상태 지문: ')"
+  tamper_state "$r" '.x = 1'; rm -f "$r/.claude/settings.local.json"
+  t=$(cd "$r" && GA_HARNESS=claude-code ga context session-start)
+  assert_contains "$t" "격리: 꺼짐"; assert_contains "$t" "ga_enforce"; assert_contains "$t" "상태 지문: 불일치"; assert_contains "$t" "GA 상태승인"
+  t=$(cd "$r" && env -u GA_HARNESS "$CORE/bin/ga" context session-start); assert_contains "$t" "GA_HARNESS"
+  rm -rf "$HOME/.local/state/grounded-arch"; assert_contains "$(cd "$r" && ga context session-start)" "상태 지문: 기록 없음"; }

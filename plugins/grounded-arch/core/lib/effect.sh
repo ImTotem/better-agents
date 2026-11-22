@@ -148,6 +148,11 @@ ga_effect_check() { # ROOT
   [ "$n" = 0 ]
 }
 
+# "a, b, c" from a check result's violations (at most 20, then "외 n개").
+ga_effect_list() { # CHECK_JSON
+  printf '%s' "$1" | jq -r '.violations as $v | ($v[0:20] | join(", ")) + (if ($v | length) > 20 then " 외 \(($v | length) - 20)개" else "" end)' 2>/dev/null
+}
+
 cmd_effect() {
   local out rc
   { [ $# -eq 1 ] && [ "$1" = check ]; } || ga_die "사용법: ga effect check" 2

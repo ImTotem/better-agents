@@ -93,7 +93,7 @@ verify_root() { # -> project in iterating with a one-member panel whose fake mod
   local r d
   r=$(mk_project brownfield); ga --root "$r" init >/dev/null; seed_ledger "$r" "$FIX/ledger_valid.json"
   set_state "$r" '.phase="iterating"|.iteration=1|.iteration_count=1'
-  echo '{"members":[{"runner":"claude","model":"opus"}],"timeout_sec":30}' >"$r/docs/architecture/.state/panel.json"
+  echo '{"members":[{"runner":"claude","model":"opus"}],"timeout_sec":30}' >"$r/docs/architecture/.state/panel.json"; _fp_sync "$r" # the user's panel, accepted
   d=$(mktemp -d); echo "$1" >"$d/opus.sleep"
   echo "$r $d"
 }
@@ -262,7 +262,7 @@ test_mcp_invalid_arguments_are_tool_errors() {
 
 test_mcp_tools_reach_their_subcommands() {
   local r out
-  r=$(mk_project brownfield); export CLAUDE_PROJECT_DIR=$r
+  r=$(mk_project brownfield); export CLAUDE_PROJECT_DIR=$r GA_HARNESS=claude-code # as .mcp.json passes it
   out=$(mcp "$(mcall 1 ga_init '{"mode":"greenfield"}')" "$(mcall 2 ga_add "$(add_args assumption "$FIX/asm.json")")" \
             "$(mcall 3 ga_resolve '{"id":"ASM-1","source_type":"code","ref":"src/main.c:1"}')" "$(mcall 4 ga_ask '{"id":"ASM-1"}')" \
             "$(mcall 5 ga_render '{}')" "$(mcall 6 ga_check '{"json":true}')" \
@@ -276,5 +276,16 @@ test_mcp_tools_reach_their_subcommands() {
   assert_eq false "$(iserr "$out" 7)"
   assert_contains "$(text "$out" 8)" "[근거 규칙]"
   assert_eq true "$(iserr "$out" 9)"; assert_contains "$(text "$out" 9)" "검증 보고서가 없습니다"
-  assert_eq true "$(resp "$out" 10 | jq '.result.isError | type == "boolean"')" # ga enforce arrives with Task 4
+  assert_eq false "$(iserr "$out" 10)"; assert_contains "$(text "$out" 10)" "격리 설정: "
+  assert_eq true "$(jq -r .sandbox.enabled "$r/.claude/settings.local.json")"
+}
+
+# P3: while the state fingerprint mismatches, the MCP write tools refuse (core ga refuses); reads work.
+test_mcp_write_tools_refuse_while_state_tampered() {
+  local r out
+  r=$(mk_project); export CLAUDE_PROJECT_DIR=$r; ga --root "$r" init >/dev/null; tamper_state "$r" '.x = 1'
+  out=$(mcp "$(mcall 1 ga_add "$(add_args assumption "$FIX/asm.json")")" "$(mcall 2 ga_render '{}')" "$(mcall 3 ga_status '{}')")
+  assert_eq true "$(iserr "$out" 1)"; assert_contains "$(text "$out" 1)" "GA 상태승인"
+  assert_eq true "$(iserr "$out" 2)"; assert_eq false "$(iserr "$out" 3)"
+  assert_eq 0 "$(ledger "$r" '.items | length')"
 }

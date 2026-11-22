@@ -150,3 +150,25 @@ test_i9_approval_context_shows_runner_paths() { local r out
 test_state_accept_verb_listed_and_recorded() { r=$(ready_inputs); . "$CORE/lib/usercmd.sh"; assert_contains " $GA_VERBS " " 상태승인 "
   out=$(uc "$r" "GA 상태승인"); assert_eq allow "$(dec "$out")"; assert_contains "$out" "상태 지문"; assert_eq 상태승인 "$(tail -n1 "$r/docs/architecture/.state/approvals.jsonl" | jq -r .point)"; }
 test_state_accept_trailing_text_blocks() { r=$(ready_inputs); out=$(uc "$r" "GA 상태승인 확인"); assert_eq block "$(dec "$out")"; assert_contains "$out" "다른 글자"; }
+
+# --- G-approval additions (spec 5.5): no file change outside the phase allow-list, state fingerprint matches ---
+test_approval_blocked_by_effect_violation() { local r out
+  r=$(ready_inputs); mkdir -p "$r/src"; echo 'int x;' >"$r/src/hack.c"
+  out=$(uc "$r" 'GA 승인 입력'); assert_eq block "$(dec "$out")"; assert_contains "$out" src/hack.c; assert_eq inputs "$(sj "$r" .phase)"
+  rm -f "$r/src/hack.c"; out=$(uc "$r" 'GA 승인 입력'); assert_eq allow "$(dec "$out")"; assert_eq iterating "$(sj "$r" .phase)"; }
+test_approval_blocked_by_fp_mismatch() { local r out
+  r=$(ready_inputs); tamper_state "$r" '.x = 1'
+  out=$(uc "$r" 'GA 승인 입력'); assert_eq block "$(dec "$out")"; assert_contains "$out" "GA 상태승인"; assert_eq inputs "$(sj "$r" .phase)"
+  # the user accepts the current state first (the same message works)
+  out=$(uc "$r" "GA 상태승인
+GA 승인 입력"); assert_eq allow "$(dec "$out")"; assert_eq iterating "$(sj "$r" .phase)"; }
+test_approval_blocked_without_fp_record() { local r out
+  r=$(ready_inputs); rm -rf "$HOME/.local/state/grounded-arch"
+  out=$(uc "$r" 'GA 승인 입력'); assert_eq block "$(dec "$out")"; assert_contains "$out" "상태 지문"; assert_eq inputs "$(sj "$r" .phase)"
+  assert_eq allow "$(dec "$(uc "$r" 'GA 상태승인')")"; assert_eq allow "$(dec "$(uc "$r" 'GA 승인 입력')")"; }
+test_approval_takes_missing_snapshot() { local r out sd
+  r=$(ready_inputs); sd=$r/docs/architecture/.state; rm -f "$sd/snapshot.json"; _fp_sync "$r"
+  mkdir -p "$r/src"; echo x >"$r/src/old.c" # made before any baseline existed: not judged
+  out=$(uc "$r" 'GA 승인 설계'); assert_eq block "$(dec "$out")"; assert_contains "$out" "파일 변경 기준"
+  [ -f "$sd/snapshot.json" ] || _fail "snapshot not kept after a blocked approval"
+  out=$(uc "$r" 'GA 승인 입력'); assert_eq allow "$(dec "$out")"; assert_not_contains "$out" "파일 변경 기준"; }

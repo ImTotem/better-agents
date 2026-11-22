@@ -52,4 +52,10 @@ if [ "$(type -t "$fn")" != function ]; then
   ga_usage >&2
   exit 2
 fi
+GA_SUB=$sub # names the MCP tool in error messages (ga_mcp_hint)
+case "$sub" in
+  # P3: the commands that change the design state refuse while the state fingerprint mismatches.
+  # A shell inside the OS sandbox cannot write the state folder: say which MCP tool to use, at once.
+  add | update | ask | resolve | render | verify | enforce | dispute) ga_fp_guard; ga_need_writable_state ;;
+esac
 "$fn" "$@"

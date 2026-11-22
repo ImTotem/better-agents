@@ -5,8 +5,8 @@
 # Recording happens at the outermost ga_unlock, only when the command wrote a state file. The
 # "wrote" signal is a marker file inside the lock dir (.lock/dirty), so it survives $(...) subshells.
 
-_ga_fp_sha() { # stdin -> sha256 hex
-  if command -v shasum >/dev/null 2>&1; then shasum -a 256 | cut -d' ' -f1; else sha256sum | cut -d' ' -f1; fi
+_ga_fp_sha() { # stdin -> sha256 hex (sha256sum first: a native binary, shasum is a perl script)
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi
 }
 
 _ga_fp_need_sha() {
@@ -59,6 +59,20 @@ ga_fp_check() { # ROOT
   [ -n "$want" ] || return 2
   got=$(_ga_fp_compute "$1") || return 1
   [ "$want" = "$got" ]
+}
+
+ga_fp_mismatch_reason() {
+  echo "설계 상태가 ga 밖에서 바뀌었습니다(상태 지문 불일치: docs/architecture/.state/). 사용자가 확인할 때까지 상태를 바꾸는 명령, 쓰기, 승인을 막습니다. 에이전트는 이것을 풀 수 없습니다. 사용자에게 알리세요: 사용자가 바뀐 내용을 확인한 뒤 \`GA 상태승인\`을 입력하면 지금 상태가 새 기준이 됩니다"
+}
+
+# P3: every state-writing subcommand calls this first (core/bin/ga). While the fingerprint
+# mismatches it refuses with exit 3; GA lines (user-command) are not guarded, so GA 상태승인 works.
+ga_fp_guard() {
+  local rc=0
+  [ -n "${GA_ROOT:-}" ] && [ -f "$(ga_state_dir "$GA_ROOT")/state.json" ] || return 0
+  ga_fp_check "$GA_ROOT" >/dev/null 2>&1 || rc=$?
+  [ "$rc" != 1 ] || ga_die "ga: $(ga_fp_mismatch_reason)" 3
+  return 0
 }
 
 # Marks the running locked command: dirty = it wrote a state file; force = record even when the

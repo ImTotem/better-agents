@@ -60,7 +60,27 @@ _ga_context_session_start() {
     else
       echo "경고: 설계 상태를 읽을 수 없습니다 (docs/architecture/.state 확인 필요).${pz} 사용자가 'GA 일시정지'를 입력하거나 docs/architecture/.state/state.json을 고치거나 복원해야 합니다."
     fi
+    _ga_context_guard "$GA_ROOT"
   fi
   _ga_context_billing
   return 0
+}
+
+# One line: the OS isolation (spec 5.5 G-sandbox) and the state fingerprint (G-effect).
+_ga_context_guard() { # ROOT
+  local st iso fp rc=0 why
+  if st=$(ga_enforce_status "$1"); then
+    iso="격리: 켜짐"
+  else
+    why=$(printf '%s' "$st" | jq -r '.reason // ""' 2>/dev/null)
+    iso="격리: 꺼짐 (${why:-이유를 알 수 없음}. 일시정지가 아니면 셸 명령이 막힙니다. MCP 도구 ga_enforce로 다시 설치하거나 사용자에게 'GA 일시정지'를 요청하세요)"
+  fi
+  ga_fp_check "$1" >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    0) fp="상태 지문: 일치" ;;
+    1) fp="상태 지문: 불일치 (상태가 ga 밖에서 바뀌었습니다. 쓰기와 승인이 막힙니다. 사용자가 확인한 뒤 'GA 상태승인')" ;;
+    2) fp="상태 지문: 기록 없음 (사용자가 docs/architecture/.state/를 확인한 뒤 'GA 상태승인')" ;;
+    *) fp="상태 지문: 확인할 수 없음 (shasum이나 sha256sum 필요)" ;;
+  esac
+  echo "${iso} / ${fp}"
 }

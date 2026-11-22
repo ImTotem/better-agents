@@ -63,3 +63,18 @@ test_r35_non_allow_decision_denies() { local r s out
 test_r35_unparseable_input_with_state_denies() { local r out
   r=$(inputs_root); out=$(printf 'not json' | (cd "$r" && hk pre-bash)); assert_eq deny "$(jq -r .hookSpecificOutput.permissionDecision <<<"$out")"
   m=$(mk_project); assert_eq "" "$(printf 'not json' | (cd "$m" && hk pre-bash))"; }
+
+# Gate redesign: the hook names its harness for the core (GA_HARNESS=claude-code), so the bash gate can
+# read the isolation state; a Stop notice reaches the user as systemMessage.
+test_pre_bash_follows_isolation_state() { local r out
+  export GA_TEST_MANAGED_SETTINGS=/nonexistent/ga-managed-settings.json
+  r=$(mk_project); GA_HARNESS=claude-code ga --root "$r" init >/dev/null
+  assert_eq "" "$(ev bash_redirect "$r" | env -u GA_HARNESS "$PLUGIN/adapters/claude-code/hook.sh" pre-bash)"
+  rm -f "$r/.claude/settings.local.json"
+  out=$(ev bash_redirect "$r" | env -u GA_HARNESS "$PLUGIN/adapters/claude-code/hook.sh" pre-bash)
+  assert_eq deny "$(jq -r .hookSpecificOutput.permissionDecision <<<"$out")"
+  assert_contains "$(jq -r .hookSpecificOutput.permissionDecisionReason <<<"$out")" ga_enforce; }
+test_stop_notice_becomes_system_message() { local r out
+  r=$(inputs_root); rm -rf "$HOME/.local/state/grounded-arch"
+  out=$(ev stop "$r" | hk stop)
+  assert_eq "" "$(jq -r '.decision // empty' <<<"$out")"; assert_contains "$(jq -r .systemMessage <<<"$out")" "상태 지문"; }

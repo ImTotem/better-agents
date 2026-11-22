@@ -79,7 +79,7 @@ test_effect_cli_check() { r=$(git_proj); ga --root "$r" effect check >/dev/null 
 test_effect_snapshot_after_init_and_transitions() { use_fake_claude; r=$(mk_project); ga --root "$r" init >/dev/null
   assert_status 0 test -f "$r/docs/architecture/.state/snapshot.json"
   seed_ledger "$r" "$FIX/ledger_inputs_ready.json"; ga --root "$r" verify >/dev/null
-  echo c >"$r/new.txt"; f=$(mktemp); printf 'GA 승인 입력' >"$f"
+  echo c >"$r/docs/architecture/notes.md"; f=$(mktemp); printf 'GA 승인 입력' >"$f" # allowed in inputs; the baseline taken at the transition includes it
   out=$(ga --root "$r" user-command --text-file "$f"); assert_eq allow "$(jq -r .decision <<<"$out")"; assert_eq iterating "$(sj "$r" .phase)"
   assert_eq '[]' "$(ga --root "$r" effect check | jq -c .changed)"; }
 

@@ -1,5 +1,5 @@
 vroot() { r=$(mk_project brownfield); ga --root "$r" init >/dev/null; seed_ledger "$r" "$FIX/ledger_valid.json"; set_state "$r" '.phase="iterating"|.iteration=1|.iteration_count=1'
-  echo '{"members":[{"runner":"claude","model":"opus"},{"runner":"claude","model":"sonnet"}],"timeout_sec":5}' >"$r/docs/architecture/.state/panel.json"; echo "$r"; }
+  echo '{"members":[{"runner":"claude","model":"opus"},{"runner":"claude","model":"sonnet"}],"timeout_sec":5}' >"$r/docs/architecture/.state/panel.json"; _fp_sync "$r"; echo "$r"; }
 rep() { jq -r "$2" "$1/docs/architecture/.state/report.json"; }
 test_verify_billing_refusal_no_report() { use_fake_claude; r=$(vroot); FAKE_AUTH_METHOD=api_key assert_status 4 ga --root "$r" verify; assert_status 1 test -f "$r/docs/architecture/.state/report.json"; }
 test_verify_merges_same_target() { use_fake_claude; r=$(vroot); export FAKE_P_DIR=$FIX/runner_outputs/merge; ga --root "$r" verify >/dev/null
@@ -13,7 +13,7 @@ test_verify_invalid_output_status() { use_fake_claude; r=$(vroot); export FAKE_P
 test_verify_member_failed_status() { use_fake_claude; r=$(vroot); d=$(mktemp -d); echo 3 >"$d/opus.rc"; export FAKE_P_DIR=$d
   assert_status 5 ga --root "$r" verify; assert_eq failed "$(rep "$r" '.panel[0].status')"; assert_eq ok "$(rep "$r" '.panel[1].status')"; }
 test_verify_timeout_status() { use_fake_claude; r=$(vroot); d=$(mktemp -d); echo 30 >"$d/opus.sleep"; export FAKE_P_DIR=$d
-  echo '{"members":[{"runner":"claude","model":"opus"}],"timeout_sec":1}' >"$r/docs/architecture/.state/panel.json"
+  echo '{"members":[{"runner":"claude","model":"opus"}],"timeout_sec":1}' >"$r/docs/architecture/.state/panel.json"; _fp_sync "$r"
   assert_status 5 ga --root "$r" verify; assert_eq timeout "$(rep "$r" '.panel[0].status')"; }
 test_verify_ok_exit_zero_and_summary() { use_fake_claude; r=$(vroot); out=$(ga --root "$r" verify); assert_contains "$out" "opus"; assert_contains "$out" "ok"
   assert_eq true "$(ga --root "$r" status --json | jq .panel_ok)"; assert_eq 0 "$(ga --root "$r" status --json | jq .findings_unprocessed)"; assert_eq null "$(ga --root "$r" status --json | jq .build_ok)"; }
@@ -40,13 +40,13 @@ test_finding_helpers_processed_rules() { use_fake_claude; r=$(vroot); export FAK
   assert_eq accept "$(rep "$r" '.findings[0].disposition.verdict')"
   h ga_finding_user_reject "$r" FND-1 "GA 무시"; assert_eq user_rejected "$(rep "$r" '.findings[0].disposition.type')"
   assert_status 3 h ga_finding_user_reject "$r" FND-9 "q"; }
-test_verify_brownfield_skeleton_build_check() { use_fake_claude; r=$(vroot); set_state "$r" '.phase="skeleton"'; echo 'exit 3' >"$r/docs/architecture/.state/test_command"
+test_verify_brownfield_skeleton_build_check() { use_fake_claude; r=$(vroot); set_state "$r" '.phase="skeleton"'; echo 'exit 3' >"$r/docs/architecture/.state/test_command"; _fp_sync "$r"
   ga --root "$r" verify >/dev/null; assert_eq 3 "$(rep "$r" '.build_check.exit')"; assert_eq false "$(ga --root "$r" status --json | jq .build_ok)"; }
 test_verify_no_build_check_without_command() { use_fake_claude; r=$(vroot); set_state "$r" '.phase="skeleton"'; ga --root "$r" verify >/dev/null; assert_eq null "$(rep "$r" '.build_check')"; }
-test_verify_no_build_check_outside_skeleton() { use_fake_claude; r=$(vroot); echo 'exit 3' >"$r/docs/architecture/.state/test_command"; ga --root "$r" verify >/dev/null; assert_eq null "$(rep "$r" '.build_check')"; }
+test_verify_no_build_check_outside_skeleton() { use_fake_claude; r=$(vroot); echo 'exit 3' >"$r/docs/architecture/.state/test_command"; _fp_sync "$r"; ga --root "$r" verify >/dev/null; assert_eq null "$(rep "$r" '.build_check')"; }
 vevid() { # ROOT REF -> verify with one finding whose only evidence is that file ref; prints findings count
   d=$(mktemp -d); jq -nc --arg r "$2" '{is_error:false,result:({findings:[{check:1,target:"ASM-1",claim:"c",evidence:[{type:"file",ref:$r}]}]}|tojson)}' >"$d/opus.json"
-  export FAKE_P_DIR=$d; echo '{"members":[{"runner":"claude","model":"opus"}],"timeout_sec":5}' >"$1/docs/architecture/.state/panel.json"
+  export FAKE_P_DIR=$d; echo '{"members":[{"runner":"claude","model":"opus"}],"timeout_sec":5}' >"$1/docs/architecture/.state/panel.json"; _fp_sync "$1"
   ga --root "$1" verify >/dev/null; rep "$1" '.findings|length'; }
 test_verify_rejects_outside_root_refs() { use_fake_claude; r=$(vroot); o=$(mktemp -d); echo x >"$o/outside.txt"; ln -s "$o/outside.txt" "$r/src/link.txt"
   assert_eq 0 "$(vevid "$r" "../$(basename "$o")/outside.txt:1")"
@@ -66,7 +66,7 @@ test_verify_default_panel_has_three() { assert_eq '["opus","sonnet","fable"]' "$
 # argval DUMP FLAG: the argument after FLAG in a FAKE_ARGV_DUMP file; hasarg DUMP ARG: ARG present.
 argval() { local a prev=""; while IFS= read -r -d '' a; do [ "$prev" = "$2" ] && { printf '%s' "$a"; return 0; }; prev=$a; done <"$1"; return 1; }
 hasarg() { local a; while IFS= read -r -d '' a; do [ "$a" = "$2" ] && return 0; done <"$1"; return 1; }
-one_member() { echo '{"members":[{"runner":"claude","model":"opus"}],"timeout_sec":30}' >"$1/docs/architecture/.state/panel.json"; }
+one_member() { echo '{"members":[{"runner":"claude","model":"opus"}],"timeout_sec":30}' >"$1/docs/architecture/.state/panel.json"; _fp_sync "$1"; }
 # brownfield skeleton root: mapped test.sh, test command "sh test.sh", one-member panel
 c1_skel() { local r sd; r=$(mk_project brownfield); ga --root "$r" init --mode brownfield >/dev/null; sd=$r/docs/architecture/.state
   set_state "$r" '.phase="skeleton"|.iteration=1|.iteration_count=1|.transcript_path="/main/session.jsonl"'

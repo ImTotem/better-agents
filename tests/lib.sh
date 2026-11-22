@@ -45,12 +45,25 @@ mk_project() { # [greenfield|brownfield] -> prints a fresh temp dir
 
 _state_dir() { mkdir -p "$1/docs/architecture/.state"; echo "$1/docs/architecture/.state"; }
 
+# The setup helpers below put a design into a given state as if ga had written it, so they record
+# the state fingerprint afterwards (core refuses state writes while it mismatches). tamper_state is
+# the one helper that edits a state file the way an outside writer would.
+_fp_sync() { # ROOT
+  ( GA_CORE=$CORE; . "$CORE/lib/common.sh"; . "$CORE/lib/state.sh"; . "$CORE/lib/fingerprint.sh"; ga_fp_record "$1" ) >/dev/null 2>&1 || true
+}
+
+tamper_state() { # ROOT JQ_EXPR   (test-only: edits state.json outside ga, fingerprint NOT re-recorded)
+  local f tmp; f=$(_state_dir "$1")/state.json; tmp=$f.tmp.$$
+  jq "$2" "$f" >"$tmp" && mv "$tmp" "$f"
+}
+
 seed_ledger() { # ROOT FIXTURE|-   (test-only: writes ledger.json directly)
   local sd; sd=$(_state_dir "$1")
   if [ "$2" = - ]; then
     local tmp="$sd/ledger.json.tmp.$$"
     cat >"$tmp" && mv "$tmp" "$sd/ledger.json"
   else cp "$2" "$sd/ledger.json"; fi
+  _fp_sync "$1"
 }
 
 seed_map() { # ROOT PATH CHANGE   (test-only: appends mapping MAP-1 to the ledger)
@@ -64,4 +77,5 @@ set_state() { # ROOT JQ_EXPR   (test-only: edits state.json directly)
   [ -f "$f" ] || echo '{"version":1,"mode":"greenfield","phase":"inputs","paused":false,"round":1,"iteration":0,"iteration_count":0,"transcript_path":null}' >"$f"
   tmp=$f.tmp.$$
   jq "$2" "$f" >"$tmp" && mv "$tmp" "$f"
+  _fp_sync "$1"
 }

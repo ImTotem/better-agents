@@ -105,7 +105,7 @@ cmd_update() {
   patch=$(_ga_stdin_object) || exit 3
   bad=$(printf '%s' "$patch" | jq -r '[keys[] | select(. as $k | ["id","kind","status","resolution","resolution_history","round","phase_added","answer","deviation"] | index($k))] | join(", ")')
   if [ -n "$bad" ]; then
-    _ga_viol "다음 필드는 고칠 수 없습니다: $bad (상태와 해결 기록은 ga ask/resolve 또는 사용자 명령으로만 바뀝니다)"
+    _ga_viol "다음 필드는 고칠 수 없습니다: $bad (상태와 해결 기록은 ga_ask, ga_resolve 또는 사용자 명령으로만 바뀝니다)"
     exit 3
   fi
   ga_lock "$GA_ROOT"
@@ -114,9 +114,9 @@ cmd_update() {
   ga_unlock "$GA_ROOT"
   if [ $rc -eq 0 ] && [ "$GA_UPDATE_REOPENED" = 1 ]; then
     case "$id" in
-      Q-*) how="사용자에게 'GA 답 $id 답변'을 다시 요청하거나, 직접 근거가 있으면 ga resolve로 해결하세요" ;;
+      Q-*) how="사용자에게 'GA 답 $id 답변'을 다시 요청하거나, 직접 근거가 있으면 ga_resolve로 해결하세요" ;;
       DEC-*) how="사용자에게 바뀐 이탈 내용을 보여 주고 'GA 확인 $id'를 다시 요청하세요" ;;
-      *) how="사용자에게 'GA 확인 $id'를 다시 요청하거나, 직접 근거가 있으면 ga resolve로 해결하세요" ;;
+      *) how="사용자에게 'GA 확인 $id'를 다시 요청하거나, 직접 근거가 있으면 ga_resolve로 해결하세요" ;;
     esac
     echo "ga: ${id}는 해결된 뒤 내용이 바뀌어 다시 open 상태가 되었습니다 (이전 해결 기록은 resolution_history에 남았습니다). $how"
   fi

@@ -26,7 +26,7 @@ test_update_merges_and_validates() { r=$(in_iter); id=$(ga --root "$r" add assum
 test_ask_question() { r=$(in_iter); id=$(echo "$QJ" | ga --root "$r" add question); ga --root "$r" ask "$id"; assert_eq asked "$(jq -r '.items[0].status' "$(LJ "$r")")"
   assert_status 3 ga --root "$r" ask "$id"
   a=$(ga --root "$r" add assumption <"$FIX/asm.json"); assert_status 3 ga --root "$r" ask "$a"; }
-test_resolve_by_user_fn() { r=$(in_iter); GA_CORE=$CORE; . "$CORE"/lib/common.sh; . "$CORE"/lib/state.sh; . "$CORE"/lib/check.sh; . "$CORE"/lib/ledger.sh
+test_resolve_by_user_fn() { r=$(in_iter); GA_CORE=$CORE; . "$CORE"/lib/common.sh; . "$CORE"/lib/state.sh; . "$CORE"/lib/check.sh; . "$CORE"/lib/ledger.sh; . "$CORE"/lib/fingerprint.sh
   id=$(ga --root "$r" add assumption <"$FIX/asm.json"); ga_ledger_resolve_by_user "$r" "$id" "맞습니다"
   assert_eq "resolved user 맞습니다" "$(jq -r '.items[0]|[.status,.resolution.by,.resolution.quote]|join(" ")' "$(LJ "$r")")"
   qid=$(echo "$QJ" | ga --root "$r" add question)
