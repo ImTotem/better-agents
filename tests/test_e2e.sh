@@ -80,8 +80,10 @@ test_e2e_out_of_scope_change_blocks_stop_until_reverted() {
   out=$(stop_hook "$r")
   assert_eq block "$(decision "$out")"
   assert_contains "$(jq -r .reason <<<"$out")" "src/a.c"
-  # the block holds on a repeated stop too (the agent can revert)
-  assert_eq block "$(decision "$(stop_hook "$r" true)")"
+  # P19: the set blocks once; a repeated stop passes and the user sees the list
+  out=$(stop_hook "$r" true)
+  assert_eq "" "$(decision "$out")"
+  assert_contains "$(jq -r .systemMessage <<<"$out")" "src/a.c"
   # approval of the iteration is refused while the change stands, and passes after the revert
   add decision "$DEC_STORE" >/dev/null
   mc ga_check '{}' >/dev/null

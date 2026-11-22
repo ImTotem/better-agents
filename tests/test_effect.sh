@@ -1,6 +1,6 @@
 #!/bin/bash
 # Tests for the G-effect file change check (core/lib/effect.sh).
-load_ga() { GA_CORE=$CORE; . "$CORE"/lib/common.sh; . "$CORE"/lib/state.sh; . "$CORE"/lib/check.sh; . "$CORE"/lib/ledger.sh; . "$CORE"/lib/effect.sh; }
+load_ga() { GA_CORE=$CORE; . "$CORE"/lib/common.sh; . "$CORE"/lib/state.sh; . "$CORE"/lib/check.sh; . "$CORE"/lib/ledger.sh; . "$CORE"/lib/effect.sh; . "$CORE"/lib/enforce.sh; . "$CORE"/lib/fingerprint.sh; }
 sj() { jq -r "$2" "$1/docs/architecture/.state/state.json"; }
 
 # git project with src/a.c, src/b.c, src/old.c committed, designed (ga init) in phase $2 (default iterating).
@@ -42,7 +42,9 @@ test_effect_greenfield_skeleton_unrestricted() { load_ga; r=$(git_proj greenfiel
   echo x >"$r/src/new.c"; assert_eq '[]' "$(viol "$r")"; }
 test_effect_implement_unrestricted_except_protected() { load_ga; r=$(git_proj brownfield implement); ga_effect_snapshot "$r"
   echo x >"$r/src/anything.c"; echo y >>"$r/src/a.c"; assert_eq '[]' "$(viol "$r")"
-  mkdir -p "$r/.claude"; echo '{}' >"$r/.claude/settings.local.json"; assert_eq '[".claude/settings.local.json"]' "$(viol "$r")"; }
+  # P19: the harness's settings files are not effect violations in any phase (enforce status checks them)
+  mkdir -p "$r/.claude"; echo '{}' >"$r/.claude/settings.local.json"; assert_eq '[]' "$(viol "$r")"
+  set_state "$r" '.phase="iterating"'; assert_eq '[]' "$(GA_HARNESS=claude-code viol "$r" | jq -c 'map(select(startswith(".claude")))')"; }
 test_effect_non_git_project() { load_ga; r=$(mk_project brownfield); ga --root "$r" init >/dev/null; set_state "$r" '.phase="iterating"'
   ga_effect_snapshot "$r"; assert_eq files "$(jq -r .kind "$r/docs/architecture/.state/snapshot.json")"; assert_eq '[]' "$(viol "$r")"
   echo "int x;" >>"$r/src/main.c"; echo n >"$r/src/new.c"; echo doc >>"$r/docs/architecture/architecture.md"
@@ -64,14 +66,9 @@ test_effect_speed_10k_files() { load_ga; r=$(git_proj)
   assert_eq '["src/a.c"]' "$(jq -c .violations <<<"$out")"
   [ "$ms" -lt 1000 ] || _fail "too slow: ${ms} ms"; }
 
-test_effect_rebaseline_only_that_path() { load_ga; r=$(git_proj); ga_effect_snapshot "$r"
+test_effect_settings_files_never_violations_non_git() { load_ga; r=$(mk_project brownfield); ga --root "$r" init >/dev/null; set_state "$r" '.phase="iterating"'; ga_effect_snapshot "$r"
   mkdir -p "$r/.claude"; echo '{}' >"$r/.claude/settings.local.json"; echo n >"$r/src/new.c"
-  ga_effect_rebaseline "$r" .claude/settings.local.json
-  assert_eq '["src/new.c"]' "$(viol "$r")"
-  echo '{"a":1}' >"$r/.claude/settings.local.json"; assert_contains "$(viol "$r")" settings.local.json; }
-test_effect_rebaseline_non_git() { load_ga; r=$(mk_project brownfield); ga --root "$r" init >/dev/null; set_state "$r" '.phase="iterating"'; ga_effect_snapshot "$r"
-  mkdir -p "$r/.claude"; echo '{}' >"$r/.claude/settings.local.json"; echo n >"$r/src/new.c"
-  ga_effect_rebaseline "$r" .claude/settings.local.json; assert_eq '["src/new.c"]' "$(viol "$r")"; }
+  assert_eq '["src/new.c"]' "$(GA_HARNESS=claude-code viol "$r")"; }
 
 test_effect_cli_check() { r=$(git_proj); ga --root "$r" effect check >/dev/null || _fail "init must snapshot"
   echo c >"$r/src/a.c"; rc=0; out=$(ga --root "$r" effect check 2>"$HOME/err") || rc=$?; assert_eq 1 "$rc"
@@ -93,3 +90,32 @@ test_effect_plugin_dir_inside_root_is_violation() { r=$(mk_project); mkdir -p "$
   r2=$(mk_project); ga --root "$r2" init >/dev/null; set_state "$r2" '.phase="implement"'; ga --root "$r2" effect check >/dev/null
   mkdir -p "$r2/vendor"; echo z >"$r2/vendor/f"; ga --root "$r2" effect check >/dev/null || _fail "outside plugin must not restrict"
 }
+
+# --- final fix wave (P18): the effect check does not trust agent-writable git metadata and fails closed ---
+test_p18_assume_unchanged_and_skip_worktree_caught() { load_ga; r=$(git_proj); ga_effect_snapshot "$r"
+  git -C "$r" update-index --assume-unchanged src/a.c; echo y >>"$r/src/a.c"
+  git -C "$r" update-index --skip-worktree src/b.c; echo y >>"$r/src/b.c"
+  assert_eq '["src/a.c","src/b.c"]' "$(viol "$r")"; }
+test_p18_flag_set_before_snapshot_judged_from_snapshot() { load_ga; r=$(git_proj)
+  git -C "$r" update-index --skip-worktree src/b.c; echo early >>"$r/src/b.c"; ga_effect_snapshot "$r"
+  assert_eq '[]' "$(viol "$r")"; echo late >>"$r/src/b.c"; assert_eq '["src/b.c"]' "$(viol "$r")"; }
+test_p18_info_exclude_not_trusted() { load_ga; r=$(git_proj)
+  echo 'gen/' >"$r/.gitignore"; git -C "$r" add .gitignore; git -C "$r" commit -qm ign; ga_effect_snapshot "$r"
+  echo 'src/new.c' >>"$r/.git/info/exclude"; echo n >"$r/src/new.c"; mkdir -p "$r/gen"; echo g >"$r/gen/out.txt"
+  assert_eq '["src/new.c"]' "$(viol "$r")"; }
+test_p18_missing_base_fails_closed() { local sp rc out; load_ga; r=$(git_proj); ga_effect_snapshot "$r"; sp=$r/docs/architecture/.state/snapshot.json
+  jq '.base = "1111111111111111111111111111111111111111"' "$sp" >"$sp.x"; mv "$sp.x" "$sp"; echo y >>"$r/src/a.c"
+  rc=0; out=$(ga_effect_check "$r" 2>/dev/null) || rc=$?; assert_eq 1 "$rc"; assert_contains "$(jq -r '.violations[0]' <<<"$out")" "결과 확인 불가"; }
+test_p18_git_failure_fails_closed() { local rc out; load_ga; r=$(git_proj); ga_effect_snapshot "$r"
+  mv "$r/.git" "$r/.git.off"
+  rc=0; out=$(ga_effect_check "$r" 2>/dev/null) || rc=$?; assert_eq 1 "$rc"; assert_contains "$(jq -r '.violations[0]' <<<"$out")" "결과 확인 불가"
+  # a .git file that redirects the repository is not followed silently either
+  echo "gitdir: $r/.git.off" >"$r/.git"
+  rc=0; out=$(ga_effect_check "$r" 2>/dev/null) || rc=$?; assert_eq 1 "$rc"; assert_contains "$(jq -r '.violations[0]' <<<"$out")" "결과 확인 불가"; }
+test_p18_repo_config_and_path_git_cannot_run_code() { local m d rc; [ -x /usr/bin/git ] || return 0
+  r=$(git_proj); m=$HOME/ran; d=$(mktemp -d)
+  printf '#!/bin/sh\n: >"%s"\nexit 1\n' "$m" >"$d/fsm"; chmod +x "$d/fsm"
+  git -C "$r" config core.fsmonitor "$d/fsm"; git -C "$r" config core.hooksPath "$d"
+  printf '#!/bin/bash\n: >"%s"\nexec /usr/bin/git "$@"\n' "$m" >"$d/git"; chmod +x "$d/git"
+  echo y >>"$r/src/a.c"; rc=0; PATH="$d:$PATH" ga --root "$r" effect check >/dev/null 2>&1 || rc=$?
+  assert_eq 1 "$rc"; [ ! -e "$m" ] || _fail "repository config or a PATH git ran code"; }
