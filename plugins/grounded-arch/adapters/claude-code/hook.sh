@@ -5,6 +5,24 @@
 # EVENT: pre-write | pre-bash | stop | user-prompt | session-start
 # bash 3.2 + jq only.
 
+# Hooks run outside the OS sandbox (spec 5.5): nothing the agent can write runs here. PATH keeps only
+# absolute entries outside the project (the hook's cwd may be anywhere in it), jq by absolute path.
+_p=""; _o=$IFS; IFS=:; set -f
+for _e in $PATH; do
+  case "$_e" in /*) ;; *) continue ;; esac
+  for _r in "${CLAUDE_PROJECT_DIR:-}" "$PWD"; do
+    case "$_r" in "" | /) continue ;; esac
+    case "${_e%/}/" in "${_r%/}"/*) continue 2 ;; esac
+  done
+  _p=${_p:+$_p:}$_e
+done
+set +f; IFS=$_o; PATH=$_p; export PATH; unset _p _o _e _r
+GA_JQ=/usr/bin/jq
+[ -x "$GA_JQ" ] || GA_JQ=$(type -P jq 2>/dev/null) || GA_JQ=/nonexistent/jq
+# The test suite simulates a missing or broken jq (honored only in test mode).
+if [ "${GA_TEST_MODE:-}" = 1 ] && [ -n "${GA_TEST_JQ:-}" ]; then GA_JQ=$GA_TEST_JQ; fi
+jq() { "$GA_JQ" "$@"; }
+
 _self=${BASH_SOURCE[0]}
 while [ -L "$_self" ]; do
   _dir=$(cd -P "$(dirname "$_self")" && pwd)
@@ -22,6 +40,12 @@ input=$(cat)
 
 jqi() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null; }
 
+# P15: the core finds the session's design from the project root Claude Code gives the hook
+# (CLAUDE_PROJECT_DIR), never from the hook's cwd, which follows the agent's cd. Without it the cwd is
+# the fallback (set below, once the input is read).
+case "${CLAUDE_PROJECT_DIR:-}" in /*) GA_SESSION_ROOT=$CLAUDE_PROJECT_DIR ;; *) GA_SESSION_ROOT=$PWD ;; esac
+export GA_SESSION_ROOT
+
 # R35-1: without a working jq, or with an event that is not a JSON object, the adapter cannot
 # read the tool call. Writes and shell commands are then denied when a design is active for the
 # session directory (`ga root --active` needs no jq); without a design they pass as before.
@@ -37,7 +61,10 @@ case "$event" in
 esac
 
 cwd=$(jqi '.cwd')
-if [ -n "$cwd" ] && [ -d "$cwd" ]; then cd "$cwd" || true; fi
+if [ -n "$cwd" ] && [ -d "$cwd" ]; then
+  cd "$cwd" || true
+  case "${CLAUDE_PROJECT_DIR:-}" in /*) ;; *) GA_SESSION_ROOT=$PWD ;; esac
+fi
 
 HOOK_ERR=""
 VERDICT=""

@@ -2,8 +2,17 @@
 # ga: grounded-arch core CLI dispatcher.  ga [--root DIR] <sub> [args]
 # Sources core/lib/*.sh, then calls cmd_<sub> (dashes in <sub> become underscores).
 
-GA_CORE=$(cd -P "$(dirname "$0")/.." && pwd)
+# Hooks and the MCP server run ga outside the OS sandbox: the PATH it inherited may hold relative
+# entries (searched in the agent-writable project), so nothing external runs before common.sh
+# drops them (spec 5.5). The original PATH is kept for the sandboxed build check.
+GA_BUILD_PATH=${GA_BUILD_PATH:-$PATH}
+_d=${0%/*}
+[ "$_d" = "$0" ] && _d=.
+GA_CORE=$(cd -P "$_d/.." && pwd)
+unset _d
+. "$GA_CORE/lib/common.sh"
 for _f in "$GA_CORE"/lib/*.sh; do
+  case "$_f" in */common.sh) continue ;; esac
   [ -f "$_f" ] && . "$_f"
 done
 unset _f
@@ -39,9 +48,18 @@ if [ -n "$root_arg" ]; then
 elif [ -n "${GA_ROOT:-}" ]; then
   GA_ROOT=$(ga_canon "$GA_ROOT") || exit 2
 else
-  GA_ROOT=$(ga_find_root "$PWD") || GA_ROOT=""
+  # P15: from a hook, the design is the one of the harness's project root, not of the drifting cwd.
+  GA_ROOT=$(ga_find_root "$(ga_session_dir)") || GA_ROOT=""
 fi
 export GA_ROOT
+# No tool from inside the design's project or the harness's session root either (an absolute PATH
+# entry there is agent-writable).
+if [ -n "${GA_SESSION_ROOT:-}" ]; then
+  ga_path_harden "$GA_ROOT" "${root_arg:-}" "$GA_SESSION_ROOT" "$(ga_canon "$GA_SESSION_ROOT" 2>/dev/null)"
+else
+  ga_path_harden "$GA_ROOT" "${root_arg:-}"
+fi
+ga_tools_resolve
 
 fn="cmd_$(echo "$sub" | tr - _)"
 case "$fn" in

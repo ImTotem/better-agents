@@ -12,10 +12,18 @@
 # (https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/stdio).
 # Requests are served one at a time, in arrival order. bash 3.2 + jq.
 
-GA_MCP_CORE=$(cd -P "$(dirname "$0")/.." && pwd) || exit 2
+# The server runs outside the OS sandbox: nothing external runs before common.sh drops the empty and
+# relative PATH entries (spec 5.5). The sandboxed build check of ga verify gets the PATH as it was.
+GA_BUILD_PATH=$PATH
+export GA_BUILD_PATH
+_d=${0%/*}
+[ "$_d" = "$0" ] && _d=.
+GA_MCP_CORE=$(cd -P "$_d/.." && pwd) || exit 2
+unset _d
 GA_MCP_GA=$GA_MCP_CORE/bin/ga
 # ga_find_root, ga_canon and GA_VERSION: the root rules must be ga's own.
 . "$GA_MCP_CORE/lib/common.sh" || { echo "ga-mcp: core/lib/common.sh를 읽을 수 없습니다" >&2; exit 2; }
+case "${CLAUDE_PROJECT_DIR:-}" in /*) ga_path_harden "$CLAUDE_PROJECT_DIR"; ga_tools_resolve ;; esac
 GA_MCP_VERSIONS="2025-11-25 2025-06-18 2025-03-26 2024-11-05" # newest first
 GA_MCP_TICK=60 # seconds between progress notifications while a tool runs
 if [ "${GA_TEST_MODE:-}" = 1 ]; then

@@ -1,5 +1,54 @@
 # grounded-arch common helpers. Sourced; bash 3.2 compatible. No set -e here.
 
+# --- code outside the OS sandbox (spec 5.5) ------------------------------------------------------
+# Hooks, the MCP server and ga verify run outside the sandbox, so they never run anything the agent
+# can write: PATH keeps only absolute entries outside the project, and jq and git are called by
+# absolute path (/usr/bin first).
+
+# Drops empty and relative PATH entries, and entries inside any DIR given (lexical comparison).
+ga_path_harden() { # [DIR...]
+  local out="" e d skip oldifs=$IFS noglob=1
+  case $- in *f*) ;; *) noglob=0; set -f ;; esac
+  IFS=:
+  for e in $PATH; do
+    case "$e" in /*) ;; *) continue ;; esac
+    skip=0
+    for d in "$@"; do
+      case "$d" in "" | /) continue ;; esac # / holds everything: never a project
+      case "${e%/}/" in "${d%/}"/*) skip=1; break ;; esac
+    done
+    [ "$skip" = 1 ] || out=${out:+$out:}$e
+  done
+  IFS=$oldifs
+  [ "$noglob" = 0 ] && set +f
+  PATH=$out
+  export PATH
+}
+
+# Absolute path of tool NAME: /usr/bin/NAME when executable, else the first one on the hardened PATH.
+ga_tool_path() { # NAME
+  local p=/usr/bin/$1
+  [ -x "$p" ] || p=$(type -P "$1" 2>/dev/null) || return 1
+  case "$p" in /*) printf '%s\n' "$p" ;; *) return 1 ;; esac
+}
+
+# Sets GA_JQ and GA_GIT (again after ga_path_harden drops more entries). No fork when /usr/bin has both.
+ga_tools_resolve() {
+  GA_JQ=/usr/bin/jq
+  [ -x "$GA_JQ" ] || GA_JQ=$(ga_tool_path jq) || GA_JQ=/nonexistent/jq
+  # The test suite simulates a missing or broken jq (honored only in test mode).
+  if [ "${GA_TEST_MODE:-}" = 1 ] && [ -n "${GA_TEST_JQ:-}" ]; then GA_JQ=$GA_TEST_JQ; fi
+  GA_GIT=/usr/bin/git
+  [ -x "$GA_GIT" ] || GA_GIT=$(ga_tool_path git) || GA_GIT=/nonexistent/git
+}
+jq() { "$GA_JQ" "$@"; }
+ga_path_harden
+ga_tools_resolve
+
+# The session's directory: the project root the harness gave the hook adapter (GA_SESSION_ROOT, which
+# the agent cannot move with cd), else the current directory (CLI use).
+ga_session_dir() { printf '%s\n' "${GA_SESSION_ROOT:-$PWD}"; }
+
 ga_die() { # MSG [CODE]
   echo "$1" >&2
   exit "${2:-2}"

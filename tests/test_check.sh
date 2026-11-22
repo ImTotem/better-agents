@@ -79,7 +79,8 @@ test_seed_ledger_same_file_pipe_is_safe() { r=$(mk_checked); i=0
 test_refs_stage_jq_failure_is_not_silent() { r=$(mk_checked); edit "$r" '(.items[]|select(.id=="FACT-1")).source.ref="src/main.c:99"'
   fk=$(mktemp -d); printf '%s\n' '#!/bin/bash' 'for a in "$@"; do [ "$a" = refs ] && exit 5; done' 'exec /usr/bin/jq "$@"' >"$fk/jq"
   chmod +x "$fk/jq"
-  assert_status 2 env PATH="$fk:$PATH" "$CORE/bin/ga" --root "$r" check; }
+  # ga calls jq by absolute path (P20); GA_TEST_JQ (test mode only) puts the failing one in its place
+  assert_status 2 env GA_TEST_JQ="$fk/jq" "$CORE/bin/ga" --root "$r" check; }
 test_exit_codes_json() { r=$(mk_checked); assert_status 0 ga --root "$r" check --json
   edit "$r" '(.items[]|select(.id=="Q-1")).impact=""'; assert_status 1 ga --root "$r" check --json; }
 test_e_decision_deviation_status_inconsistent() { r=$(mk_checked)

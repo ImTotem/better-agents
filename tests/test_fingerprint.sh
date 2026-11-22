@@ -7,9 +7,16 @@ proj() { local r; r=$(mk_project); ga --root "$r" init >/dev/null; echo "$r"; }
 fpfile() { ( load_ga; ga_fp_path "$1" ); }
 fpcheck() { local rc=0; ( load_ga; ga_fp_check "$1" ) >/dev/null 2>&1 || rc=$?; echo $rc; }
 
-test_fp_recorded_after_ga_write() { r=$(proj); p=$(fpfile "$r"); rm -f "$p"; assert_eq 2 "$(fpcheck "$r")"
-  ga --root "$r" add assumption <"$FIX/asm.json" >/dev/null; [ -f "$p" ] || _fail "no fingerprint file $p"
-  assert_eq "$(cd -P "$r" && pwd -P)" "$(jq -r .root "$p")"; assert_eq 0 "$(fpcheck "$r")"; }
+test_fp_recorded_after_ga_write() { r=$(proj); p=$(fpfile "$r"); [ -f "$p" ] || _fail "no fingerprint file $p after init"
+  ga --root "$r" add assumption <"$FIX/asm.json" >/dev/null; assert_eq 0 "$(fpcheck "$r")"
+  assert_eq "$(cd -P "$r" && pwd -P)" "$(jq -r .root "$p")"; }
+# P17: only ga init and GA 상태승인 create or replace the record; no other write re-creates it.
+test_p17_missing_or_unreadable_record_not_recreated_by_writes() { r=$(proj); p=$(fpfile "$r"); rm -f "$p"; assert_eq 2 "$(fpcheck "$r")"
+  ga --root "$r" add assumption <"$FIX/asm.json" >/dev/null; assert_eq 2 "$(fpcheck "$r")"
+  uc "$r" 'GA 일시정지' >/dev/null; assert_eq 2 "$(fpcheck "$r")"
+  echo '{}' >"$p"; uc "$r" 'GA 재개' >/dev/null; assert_eq 2 "$(fpcheck "$r")"
+  ( f=$(mktemp); printf '계속' >"$f"; ga --root "$r" user-command --text-file "$f" --transcript /tmp/t.jsonl >/dev/null ); assert_eq 2 "$(fpcheck "$r")"
+  uc "$r" 'GA 상태승인' >/dev/null; assert_eq 0 "$(fpcheck "$r")"; }
 test_fp_none_before_any_write_rc2() { r=$(mk_project); mkdir -p "$r/docs/architecture/.state"; echo '{}' >"$r/docs/architecture/.state/state.json"; assert_eq 2 "$(fpcheck "$r")"; }
 test_fp_mismatch_after_direct_edit() { r=$(proj); assert_eq 0 "$(fpcheck "$r")"
   tamper_state "$r" '.phase="skeleton"'; assert_eq 1 "$(fpcheck "$r")"; }

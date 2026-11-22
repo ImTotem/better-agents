@@ -57,8 +57,12 @@ test_stop_limits_to_10_errors() {
 # C1 (R24): inside a verifier runner the stop gate never forces the runner to continue.
 test_c1_in_runner_stop_allows() { local r; r=$(phase iterating); seed_ledger "$r" "$FIX/ledger_bad_asm.json"
   assert_eq allow "$(dec "$(cd "$r" && GA_IN_RUNNER=1 ga gate stop)")"; }
-# I6 (R31): the PAUSED marker opens every gate; a corrupt state.json keeps read-only work possible.
+# I6 (R31): the PAUSED marker opens the phase rules, the bash gate and Stop; a corrupt state.json keeps
+# read-only work possible. P21: the fingerprint check stays, so a marker made outside ga (a state
+# change ga did not record) still locks writes in the design until the user accepts it.
 test_i6_paused_marker_opens_gates() { local r; r=$(phase inputs); seed_ledger "$r" "$FIX/ledger_bad_asm.json"; : >"$r/docs/architecture/.state/PAUSED"
+  assert_eq allow "$(bash_dec "$r" 'rm -rf src')"; assert_eq deny "$(dec "$(ga gate write --path "$r/src/a.c")")"
+  _fp_sync "$r"
   assert_eq allow "$(dec "$(ga gate write --path "$r/src/a.c")")"; assert_eq allow "$(bash_dec "$r" 'rm -rf src')"
   assert_eq allow "$(dec "$(cd "$r" && ga gate stop)")"; }
 test_i6_corrupt_state_write_denied_with_recovery() { local r out; r=$(phase inputs); echo '{bad' >"$r/docs/architecture/.state/state.json"
@@ -66,7 +70,9 @@ test_i6_corrupt_state_write_denied_with_recovery() { local r out; r=$(phase inpu
 # I9 (R34d): the plugin itself is write-protected while a design is active.
 test_i9_plugin_root_write_denied() { local r; r=$(phase implement)
   assert_eq deny "$(cd "$r" && dec "$(ga gate write --path "$PLUGIN/core/lib/gates.sh")")"
-  set_state "$r" '.paused=true'; assert_eq allow "$(cd "$r" && dec "$(ga gate write --path "$PLUGIN/core/lib/gates.sh")")"; }
+  # P21: a pause does not lift it
+  set_state "$r" '.paused=true'; assert_eq deny "$(cd "$r" && dec "$(ga gate write --path "$PLUGIN/core/lib/gates.sh")")"
+  assert_eq allow "$(cd "$(mk_project)" && dec "$(ga gate write --path "$PLUGIN/core/lib/gates.sh")")"; }
 
 # --- gate redesign (spec 5.5): shell commands run inside the OS sandbox, effects are checked afterwards ---
 # The helpers call the gates as the Claude Code hook does (GA_HARNESS=claude-code). A managed-settings
@@ -141,15 +147,15 @@ test_gate_write_denies_settings_and_fp_store() { local r m w p dd
   for p in "$r/.claude/commands/x.md" "$r/.claude/agents/a.md" "$r/src/a.c" "$r/settings.json" "$HOME/notes.txt"; do
     [ "$(dec "$(gw "$p")")" = allow ] || _fail "denied: $p"
   done
-  assert_contains "$(gw "$r/.claude/settings.local.json")" "GA 일시정지"
+  assert_contains "$(gw "$r/.claude/settings.local.json")" "ga_enforce"
   dd=$(mktemp -d); assert_eq deny "$(dec "$(GA_DATA_DIR=$dd gw "$dd/abc.json")")"
   # a worktree design protects the main checkout's settings too
   m=$(mk_project); w=$(mk_project); mkdir -p "$m/.git/worktrees/wt"; echo ../.. >"$m/.git/worktrees/wt/commondir"
   echo "gitdir: $m/.git/worktrees/wt" >"$w/.git"; GA_HARNESS=claude-code ga --root "$w" init >/dev/null
   assert_eq deny "$(cd "$w" && dec "$(gw "$m/.claude/settings.local.json")")"
   assert_eq allow "$(cd "$w" && dec "$(gw "$m/.claude/commands/x.md")")"
-  # paused, or no design at the session: not protected
-  set_state "$r" '.paused=true'; assert_eq allow "$(dec "$(gw "$r/.claude/settings.local.json")")"
+  # P21: paused, still protected; no design at the session: not protected
+  set_state "$r" '.paused=true'; assert_eq deny "$(dec "$(gw "$r/.claude/settings.local.json")")"
   p=$(mk_project); assert_eq allow "$(cd "$p" && dec "$(gw "$HOME/.claude/settings.json")")"; }
 test_gate_write_follows_final_symlink() { local r
   r=$(enforced implement)
@@ -170,9 +176,9 @@ test_gate_stop_blocks_on_effect_violation() { local r out
   r=$(enforced inputs); assert_eq allow "$(dec "$(gs "$r")")"
   mkdir -p "$r/src"; echo 'int x;' >"$r/src/new.c"
   out=$(gs "$r"); assert_eq block "$(dec "$out")"; assert_contains "$out" src/new.c
-  # the reason says the agent can revert it (so it keeps blocking) and the user can accept it
-  assert_contains "$out" "되돌릴 때까지 종료를 계속 막습니다"; assert_contains "$out" "GA 상태승인"
-  assert_eq block "$(dec "$(gs "$r" true)")"
+  # P19: the reason hands the list to the user (revert or accept with GA 상태승인); it blocks once
+  assert_contains "$out" "사용자에게 그대로 보여 주고"; assert_contains "$out" "GA 상태승인"
+  assert_eq allow "$(dec "$(gs "$r" true)")"
   rm -f "$r/src/new.c"; assert_eq allow "$(dec "$(gs "$r")")"
   echo x >>"$r/docs/architecture/architecture.md"; assert_eq allow "$(dec "$(gs "$r")")"; }
 test_gate_stop_blocks_on_fp_mismatch() { local r out
@@ -212,7 +218,7 @@ test_agent_paths_cannot_clear_effect_violation() { local r rc out
   ga --root "$r" add assumption <"$FIX/asm.json" >/dev/null; ga --root "$r" render >/dev/null
   GA_HARNESS=claude-code ga --root "$r" enforce >/dev/null; ga --root "$r" verify >/dev/null || true
   rc=0; ga --root "$r" effect snapshot >/dev/null 2>&1 || rc=$?; assert_eq 2 "$rc"
-  rc=0; out=$(ga --root "$r" effect check 2>/dev/null) || rc=$?; assert_eq 1 "$rc"; assert_eq '["src/agent.c"]' "$(jq -c .violations <<<"$out")"
+  rc=0; out=$(GA_HARNESS=claude-code ga --root "$r" effect check 2>/dev/null) || rc=$?; assert_eq 1 "$rc"; assert_eq '["src/agent.c"]' "$(jq -c .violations <<<"$out")"
   assert_eq block "$(dec "$(gs "$r")")"; }
 test_gate_stop_takes_missing_snapshot_once() { local r out
   r=$(enforced inputs); rm -f "$r/docs/architecture/.state/snapshot.json"; _fp_sync "$r"
@@ -250,3 +256,61 @@ test_cli_write_permission_error_names_mcp_tool() { local r sd out out2 out3 rc=0
   # the lock itself also reports the MCP tool (a folder that turns read-only after the probe)
   out=$( ( GA_CORE=$CORE; . "$CORE/lib/common.sh"; GA_SUB=ask; chmod a-w "$sd"; ga_lock "$r" ) 2>&1 ) || true
   chmod u+w "$sd"; assert_contains "$out" ga_ask; [ ! -e "$sd/.lock" ] || _fail "lock created"; }
+
+# --- final fix wave ---
+# P19: Stop reports a violation set once and hands it to the user; it never tells the agent to revert.
+test_p19_stop_reports_violation_set_once() { local r out
+  r=$(enforced inputs); mkdir -p "$r/src"; echo 'int x;' >"$r/src/new.c"
+  out=$(gs "$r"); assert_eq block "$(dec "$out")"; assert_contains "$out" src/new.c; assert_contains "$out" "GA 상태승인"; assert_contains "$out" "사용자"
+  assert_not_contains "$(jq -r .reason <<<"$out")" "되돌리세요"; assert_not_contains "$(jq -r .reason <<<"$out")" "계속 막습니다"
+  out=$(gs "$r"); assert_eq allow "$(dec "$out")"; assert_contains "$(notice "$out")" src/new.c
+  assert_eq allow "$(dec "$(gs "$r" true)")"
+  echo y >"$r/src/other.c"; assert_eq block "$(dec "$(gs "$r")")" # a different set is reported again
+  assert_eq allow "$(dec "$(gs "$r")")"
+  rm -f "$r/src/new.c" "$r/src/other.c"; out=$(gs "$r"); assert_eq allow "$(dec "$out")"; assert_eq "" "$(notice "$out")"
+  echo z >"$r/src/new.c"; assert_eq block "$(dec "$(gs "$r")")"  # reported again once it was cleared
+  out=$(uc "$r" 'GA 승인 입력'); assert_eq block "$(dec "$out")"; assert_contains "$out" src/new.c; }
+# P19: the harness's own settings files are not effect violations at all.
+test_p19_settings_files_are_not_effect_violations() { local r s out
+  r=$(enforced inputs); s=$r/.claude/settings.local.json
+  jq '.permissions.allow = ["Bash(npm test)"]' "$s" >"$s.x"; mv "$s.x" "$s"; echo '{"model":"x"}' >"$r/.claude/settings.json"
+  out=$(gs "$r"); assert_eq allow "$(dec "$out")"; assert_eq "" "$(notice "$out")"
+  assert_eq '[]' "$(cd "$r" && GA_HARNESS=claude-code ga effect check | jq -c .violations)"; }
+
+# P20: Write/Edit never touch a file that runs outside the sandbox -- design or not, paused or not.
+test_p20_write_denies_files_run_outside_sandbox() { local r q p
+  r=$(enforced implement); git -C "$r" init -q; cd "$r"
+  for p in "$r/.git/config" "$r/.git/hooks/pre-commit" "$r/.git/HOOKS/post-checkout" "$r/.git/modules/m/config" "$r/.git/modules/m/hooks/x" \
+           "$r/.git/worktrees/w/config.worktree" "$r/.mcp.json" "$HOME/.claude.json" "$HOME/.claude/plugins/other/hooks/h.sh" \
+           "$HOME/.claude/plugins/known_marketplaces.json"; do
+    [ "$(dec "$(gw "$p")")" = deny ] || _fail "not denied: $p"
+  done
+  for p in "$r/.git/info/exclude" "$r/src/config" "$r/hooks/a.sh" "$r/docs/mcp.json" "$HOME/.claude/CLAUDE.md"; do
+    [ "$(dec "$(gw "$p")")" = allow ] || _fail "denied: $p"
+  done
+  set_state "$r" '.paused=true'; assert_eq deny "$(dec "$(gw "$r/.git/config")")"; assert_eq deny "$(dec "$(gw "$r/.mcp.json")")"
+  q=$(mk_project); git -C "$q" init -q; cd "$q"
+  for p in "$q/.git/config" "$q/.git/hooks/pre-commit" "$q/.mcp.json" "$HOME/.claude.json" "$HOME/.claude/plugins/x.sh"; do
+    [ "$(dec "$(gw "$p")")" = deny ] || _fail "not denied without a design: $p"
+  done
+  assert_eq allow "$(dec "$(gw "$q/src/a.c")")"; assert_eq allow "$(dec "$(gw "$HOME/.claude/settings.json")")"; }
+
+# P21: GA 일시정지 turns off the phase rules only; the integrity protections and the fingerprint stay.
+test_p21_pause_keeps_integrity_protections() { local r p out
+  r=$(enforced inputs); uc "$r" 'GA 일시정지' >/dev/null; cd "$r"
+  for p in "$r/docs/architecture/.state/state.json" "$r/docs/architecture/.state/PAUSED" "$r/.claude/settings.local.json" \
+           "$HOME/.claude/settings.json" "$HOME/.local/state/grounded-arch/x.json" "$PLUGIN/core/lib/gates.sh" "$r/.mcp.json"; do
+    [ "$(dec "$(gw "$p")")" = deny ] || _fail "not denied while paused: $p"
+  done
+  assert_eq allow "$(dec "$(gw "$r/src/a.c")")" # the phase rule (inputs: docs/architecture only) is off
+  tamper_state "$r" '.x = 1'
+  out=$(gw "$r/src/a.c"); assert_eq deny "$(dec "$out")"; assert_contains "$out" "GA 상태승인"
+  out=$(gs "$r"); assert_eq block "$(dec "$out")"; assert_contains "$out" "GA 상태승인"
+  out=$(gs "$r" true); assert_eq allow "$(dec "$out")"; assert_contains "$(notice "$out")" "상태 지문"; }
+# P21: GA 재개 takes a new file baseline and lists what it accepted.
+test_p21_resume_lists_accepted_files() { local r out i
+  r=$(enforced inputs); uc "$r" 'GA 일시정지' >/dev/null; mkdir -p "$r/src"; echo a >"$r/src/x.c"; echo b >"$r/src/y.c"
+  out=$(uc "$r" 'GA 재개'); assert_eq allow "$(dec "$out")"; assert_contains "$out" src/x.c; assert_contains "$out" src/y.c
+  uc "$r" 'GA 일시정지' >/dev/null; for i in $(seq 1 25); do echo "$i" >"$r/src/f$i.c"; done
+  out=$(uc "$r" 'GA 재개'); assert_contains "$out" "외 5개"
+  uc "$r" 'GA 일시정지' >/dev/null; out=$(uc "$r" 'GA 재개'); assert_contains "$(jq -r .context <<<"$out")" "허용 밖 변경 없음"; }

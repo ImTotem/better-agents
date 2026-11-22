@@ -93,12 +93,14 @@ _ga_fp_finish() { # ROOT
   return 0
 }
 
-# Called by the outermost ga_lock right after the lock is taken: remember a pre-existing mismatch,
-# so a later write by this command cannot silently re-baseline a direct edit.
+# Called by the outermost ga_lock right after the lock is taken: remember that the state was not
+# trusted before this command -- a mismatch, and also a missing or unreadable record (P17: only
+# ga init and GA 상태승인, which force, create or replace the record) -- so a later write by this
+# command cannot silently re-baseline a direct edit.
 _ga_fp_begin() { # ROOT
   local rc=0
   ga_fp_check "$1" >/dev/null 2>&1 || rc=$?
-  [ "$rc" = 1 ] && ga_fp_mark "$1" premismatch
+  [ "$rc" = 0 ] || ga_fp_mark "$1" premismatch
   return 0
 }
 

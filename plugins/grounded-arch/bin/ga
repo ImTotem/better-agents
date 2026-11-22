@@ -7,4 +7,8 @@ while [ -L "$_self" ]; do
   case "$_self" in /*) ;; *) _self=$_dir/$_self ;; esac
 done
 _here=$(cd -P "$(dirname "$_self")" && pwd)
+# The plugin's bin/ is on the Bash tool's PATH in Claude Code: name the harness like hooks.json and
+# .mcp.json do, so `ga effect check` in the shell judges the settings files as the hooks do.
+GA_HARNESS=${GA_HARNESS:-claude-code}
+export GA_HARNESS
 exec "$_here/../core/bin/ga" "$@"
