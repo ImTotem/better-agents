@@ -91,6 +91,16 @@ test_effect_plugin_dir_inside_root_is_violation() { r=$(mk_project); mkdir -p "$
   mkdir -p "$r2/vendor"; echo z >"$r2/vendor/f"; ga --root "$r2" effect check >/dev/null || _fail "outside plugin must not restrict"
 }
 
+# P25: OS metadata files (Finder, Windows Explorer) are never changes; a real change next to them still is.
+test_p25_os_metadata_files_ignored() { load_ga; r=$(git_proj); ga_effect_snapshot "$r"
+  echo x >"$r/.DS_Store"; echo x >"$r/src/.DS_Store"; echo x >"$r/src/._a.c"; echo x >"$r/Thumbs.db"; echo x >"$r/src/desktop.ini"
+  mkdir -p "$r/.Spotlight-V100" "$r/.Trashes"; echo x >"$r/.Spotlight-V100/s"; echo x >"$r/.Trashes/t"
+  assert_eq '[]' "$(viol "$r")"
+  echo y >>"$r/src/a.c"; assert_eq '["src/a.c"]' "$(viol "$r")"
+  r=$(mk_project brownfield); ga --root "$r" init >/dev/null; set_state "$r" '.phase="iterating"'; ga_effect_snapshot "$r"
+  echo x >"$r/.DS_Store"; echo x >"$r/src/._main.c"; assert_eq '[]' "$(viol "$r")"
+  echo n >"$r/src/new.c"; assert_eq '["src/new.c"]' "$(viol "$r")"; }
+
 # --- final fix wave (P18): the effect check does not trust agent-writable git metadata and fails closed ---
 test_p18_assume_unchanged_and_skip_worktree_caught() { load_ga; r=$(git_proj); ga_effect_snapshot "$r"
   git -C "$r" update-index --assume-unchanged src/a.c; echo y >>"$r/src/a.c"

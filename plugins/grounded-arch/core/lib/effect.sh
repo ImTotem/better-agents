@@ -9,6 +9,20 @@
 
 GA_EFF_STATE_PREFIX="docs/architecture/.state/"
 GA_EFF_UNSURE="결과 확인 불가"
+# P25: OS metadata files are never changes, wherever they appear (Finder writes .DS_Store into any
+# folder the user opens). A fixed list: the global git excludes file is not trusted (the agent can
+# write it with the Write tool).
+GA_EFF_OS_META='(\.DS_Store|\._[^/]*|\.Spotlight-V100|\.Trashes|Thumbs\.db|desktop\.ini)'
+
+# stdin: paths (git) or "value path" lines (non-git). Drops the ones naming OS metadata files.
+_ga_eff_drop_os_meta() { # [--valued]
+  if [ "${1:-}" = --valued ]; then
+    grep -Ev "^[^ ]+ (.*/)?${GA_EFF_OS_META}(/.*)?\$"
+  else
+    grep -Ev "^(.*/)?${GA_EFF_OS_META}(/.*)?\$"
+  fi
+  return 0
+}
 
 ga_effect_snapshot_path() { echo "$(ga_state_dir "$1")/snapshot.json"; } # ROOT
 
@@ -31,7 +45,7 @@ _ga_eff_files() { # ROOT
       find . \( -name node_modules -o -name .git -o -name target -o -name build -o -name dist -o -path "./${GA_EFF_STATE_PREFIX%/}" \) -prune -o -type f -exec stat -c '%s:%Y %n' {} + 2>/dev/null
     else
       find . \( -name node_modules -o -name .git -o -name target -o -name build -o -name dist -o -path "./${GA_EFF_STATE_PREFIX%/}" \) -prune -o -type f -exec stat -f '%z:%m %N' {} + 2>/dev/null
-    fi ) | sed 's# \./# #'
+    fi ) | sed 's# \./# #' | _ga_eff_drop_os_meta --valued
 }
 
 # Git projects: paths (newline list) that may differ from the snapshot -- changed against BASE (every
@@ -49,7 +63,7 @@ _ga_eff_candidates() { # ROOT BASE
      _ga_git -C "$root" ls-files -o --exclude-per-directory=.gitignore -z >"$t/b" 2>"$t/e" &&
      _ga_git -C "$root" ls-files -v -z >"$t/v" 2>"$t/e"; then
     { tr '\0' '\n' <"$t/a"; tr '\0' '\n' <"$t/b"; tr '\0' '\n' <"$t/v" | sed -n 's/^[a-zS] //p'; } |
-      grep -v '^$' | grep -v "^${GA_EFF_STATE_PREFIX}" | sort -u
+      grep -v '^$' | grep -v "^${GA_EFF_STATE_PREFIX}" | _ga_eff_drop_os_meta | sort -u
     rm -rf "$t"
     return 0
   fi
@@ -116,8 +130,9 @@ _ga_eff_changed() { # ROOT
     git) ;;
     files)
       cur=$(_ga_eff_files "$root" | _ga_eff_to_map) || { echo "파일 목록을 만들 수 없음"; return 2; }
-      jq -nc --argjson c "$cur" --slurpfile s "$sp" '
-        $s[0].files as $o | ([$c | keys[]] + [$o | keys[]] | unique) | map(select($c[.] != $o[.])) | sort'
+      jq -nc --argjson c "$cur" --slurpfile s "$sp" --arg om "^(.*/)?${GA_EFF_OS_META}(/.*)?\$" '
+        $s[0].files as $o | ([$c | keys[]] + [$o | keys[]] | unique)
+        | map(select(($c[.] != $o[.]) and (test($om) | not))) | sort'
       return 0 ;;
     *) echo "기준(snapshot.json)을 읽을 수 없음"; return 2 ;;
   esac
@@ -135,7 +150,7 @@ _ga_eff_changed() { # ROOT
   fi
   cand=$(_ga_eff_candidates "$root" "$base") || { echo "$cand"; return 2; }
   # Current candidates plus paths dirty at snapshot time (they may have been reverted since).
-  cand=$( { printf '%s\n' "$cand"; jq -r '.dirty | keys[]' "$sp"; } | grep -v '^$' | sort -u)
+  cand=$( { printf '%s\n' "$cand"; jq -r '.dirty | keys[]' "$sp"; } | grep -v '^$' | _ga_eff_drop_os_meta | sort -u)
   hashes=$(printf '%s\n' "$cand" | _ga_eff_hash_paths "$root") || { echo "git 오류: hash-object 실패"; return 2; }
   cur=$(printf '%s\n' "$hashes" | _ga_eff_to_map) || { echo "해시 목록을 읽을 수 없음"; return 2; }
   # A candidate that was not dirty at snapshot time is unchanged only when it equals the base commit
