@@ -27,7 +27,7 @@ _uc_out() { # DECISION REASON CONTEXT
 }
 
 # Files under .state that a command may change.
-_uc_files() { echo "state.json ledger.json report.json approvals.jsonl test_command PAUSED"; }
+_uc_files() { echo "state.json ledger.json report.json approvals.jsonl test_command PAUSED snapshot.json"; }
 
 _uc_backup() { # ROOT DIR
   local sd f
@@ -206,6 +206,7 @@ _uc_approve() { # ROOT POINT QUOTE
       next="이제 구현할 수 있습니다. 대응표에 없는 경로는 쓰기 전에 ga add mapping으로 기록하세요."
       ;;
   esac
+  ga_effect_snapshot "$root" || return 2
   _uc_append_approval "$root" "$point" "$phase" "$to" "$round" "$rec_iter" "$quote" || return 2
   _uc_sum "기록됨: 승인($point) / 단계 ${phase}→${to} (반복 $iter/$icount)"
   # R34c: show the user which binaries produced the report this approval relied on.
@@ -318,6 +319,7 @@ _uc_apply() {
       _uc_isint "$ic" || { _uc_fail "state.json의 iteration_count가 정수가 아닙니다 ($ic). 파일을 고치세요"; return 1; }
       ic=$((ic + 1))
       ga_state_set "$root" ".phase = \"iterating\" | .iteration_count = $ic | .iteration = $ic" || return 2
+      ga_effect_snapshot "$root" || return 2
       _uc_sum "기록됨: 되돌리기 / 단계 ${phase}→iterating (반복 $ic/$ic)"
       GA_UC_NEXT="새 반복의 드라이버를 high로 지정하고 결정을 기록한 뒤 ga verify, 'GA 승인 반복'을 진행하세요."
       ;;
@@ -331,6 +333,7 @@ _uc_apply() {
       if [ -n "$dv" ]; then _uc_fail "사용자가 확인하지 않은 이탈 결정이 남아 있어 새 라운드를 시작할 수 없습니다: $dv (GA 확인 DEC-n)"; fi
       [ -z "$v$dv" ] || return 1
       ga_state_set "$root" '.phase = "inputs" | .round += 1 | .iteration = 0 | .iteration_count = 0' || return 2
+      ga_effect_snapshot "$root" || return 2
       _uc_sum "기록됨: 새 라운드 $(ga_state_get "$root" .round) / 단계 implement→inputs"
       GA_UC_NEXT="새 라운드의 입력(드라이버, 제약, 가정)을 정리하고 ga verify, 'GA 승인 입력'을 진행하세요."
       ;;
