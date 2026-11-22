@@ -129,3 +129,88 @@ test_p18_repo_config_and_path_git_cannot_run_code() { local m d rc; [ -x /usr/bi
   printf '#!/bin/bash\n: >"%s"\nexec /usr/bin/git "$@"\n' "$m" >"$d/git"; chmod +x "$d/git"
   echo y >>"$r/src/a.c"; rc=0; PATH="$d:$PATH" ga --root "$r" effect check >/dev/null 2>&1 || rc=$?
   assert_eq 1 "$rc"; [ ! -e "$m" ] || _fail "repository config or a PATH git ran code"; }
+
+# --- second fix wave (P29): git only lists files; ga compares the contents itself ---
+cleanf() { printf '#!/bin/sh\n: >"%s"\ncat\n' "$2" >"$1"; chmod +x "$1"; } # SCRIPT MARKER: a clean filter that logs
+# N2: .git/commondir pointing git at a copied repository whose config has a clean filter.
+test_p29_commondir_redirect_never_runs_a_filter() { local r e m rc out
+  load_ga; r=$(git_proj); ga_effect_snapshot "$r"; m=$HOME/filter-ran; e=$(mktemp -d); cleanf "$HOME/clean.sh" "$m"
+  cp -R "$r/.git/." "$e/"; printf '[filter "x"]\n\tclean = %s\n' "$HOME/clean.sh" >>"$e/config"
+  mkdir -p "$e/info"; echo '* filter=x' >"$e/info/attributes"
+  echo "$e" >"$r/.git/commondir"; touch "$r/src/a.c"
+  rc=0; out=$(ga --root "$r" effect check 2>/dev/null) || rc=$?
+  [ ! -e "$m" ] || _fail "a clean filter ran outside the sandbox (effect check)"
+  assert_eq 1 "$rc"; assert_contains "$(jq -r '.violations[0]' <<<"$out")" "결과 확인 불가"
+  out=$(cd "$r" && GA_HARNESS=claude-code ga gate stop --hook-active false)
+  [ ! -e "$m" ] || _fail "a clean filter ran outside the sandbox (Stop)"; assert_eq block "$(jq -r .decision <<<"$out")"; }
+# Clean filters from the repository config and the user's global config never run either.
+test_p29_repo_and_global_filters_never_run() { local r m
+  load_ga; r=$(git_proj); ga_effect_snapshot "$r"; m=$HOME/filter-ran; cleanf "$HOME/clean.sh" "$m"
+  printf '[filter "x"]\n\tclean = %s\n' "$HOME/clean.sh" >"$HOME/.gitconfig"
+  git -C "$r" config filter.y.clean "$HOME/clean.sh"
+  printf 'src/a.c filter=x\nsrc/b.c filter=y\n' >"$r/.git/info/attributes"
+  echo y >>"$r/src/a.c"; echo y >>"$r/src/b.c"
+  assert_eq '["src/a.c","src/b.c"]' "$(ga --root "$r" effect check 2>/dev/null | jq -c .violations)"
+  [ ! -e "$m" ] || _fail "a repository or global clean filter ran"; }
+# N3: an index entry forged to the base blob id with the edited file's stat does not hide the edit.
+test_p29_forged_index_entry_still_a_change() { local r base ed hex body sum
+  command -v xxd >/dev/null 2>&1 || return 0
+  load_ga; r=$(git_proj); ga_effect_snapshot "$r"; base=$(git -C "$r" rev-parse HEAD:src/a.c)
+  echo edited >"$r/src/a.c"; touch -t 202001010000 "$r/src/a.c"
+  git -C "$r" update-index --add src/a.c; ed=$(git -C "$r" rev-parse :src/a.c)
+  hex=$(xxd -p "$r/.git/index" | tr -d '\n'); body=${hex:0:$((${#hex} - 40))}; body=${body/$ed/$base}
+  sum=$(printf '%s' "$body" | xxd -r -p | shasum -a 1 | cut -c1-40)
+  printf '%s%s' "$body" "$sum" | xxd -r -p >"$r/.git/index.new"; mv "$r/.git/index.new" "$r/.git/index"
+  assert_eq "" "$(git -C "$r" diff --name-only HEAD)" # git itself trusts the forged entry
+  assert_eq '["src/a.c"]' "$(viol "$r")"; }
+# A .gitignore that is new or changed is itself a change, even when it ignores itself.
+test_p29_gitignore_change_is_a_change() { local r
+  load_ga; r=$(git_proj greenfield inputs); ga_effect_snapshot "$r"
+  printf '*\n' >"$r/src/.gitignore"; echo x >"$r/src/new.c"
+  assert_contains "$(viol "$r")" '"src/.gitignore"'; }
+# The git layout is pinned: a commondir file in a main .git, or a .git file that is not a normal linked
+# worktree, cannot be trusted; a normal linked worktree works.
+test_p29_layout_is_pinned() { local r w rc out
+  load_ga; r=$(git_proj); ga_effect_snapshot "$r"
+  echo "$r/.git" >"$r/.git/commondir" # even one that names the folder itself
+  rc=0; out=$(ga_effect_check "$r" 2>/dev/null) || rc=$?; assert_eq 1 "$rc"; assert_contains "$(jq -r '.violations[0]' <<<"$out")" "결과 확인 불가"
+  rm "$r/.git/commondir"; assert_eq '[]' "$(viol "$r")"
+  w=$(mktemp -d)/wt; git -C "$r" worktree add -q "$w" 2>/dev/null; ga --root "$w" init --mode greenfield >/dev/null; set_state "$w" '.phase="iterating"'
+  ga_effect_snapshot "$w"; assert_eq '[]' "$(viol "$w")"; echo y >>"$w/src/a.c"; assert_eq '["src/a.c"]' "$(viol "$w")"
+  mkdir -p "$HOME/gd"; cp "$r/.git/HEAD" "$HOME/gd/"; echo "gitdir: $HOME/gd" >"$w/.git"
+  rc=0; out=$(ga_effect_check "$w" 2>/dev/null) || rc=$?; assert_eq 1 "$rc"; assert_contains "$(jq -r '.violations[0]' <<<"$out")" "결과 확인 불가"; }
+# ga keeps its own stat record (size, mtime, ctime, inode) of every candidate; a file whose record
+# changed is hashed and compared, so a changed mode alone is not a change and restored times hide nothing.
+test_p29_snapshot_keeps_own_stat_record() { local r l p
+  load_ga; r=$(git_proj); ga_effect_snapshot "$r"; l=$r/docs/architecture/.state/snapshot.list
+  for p in src/a.c src/b.c src/old.c; do # "TYPEMODE:SIZE:MTIME:CTIME:INODE REF PATH"
+    grep -Eq "^-[^ :]*:[0-9]+:[0-9.]+:[0-9.]+:[0-9]+ = $p\$" "$l" || _fail "no stat record for $p in snapshot.list"
+  done
+  chmod 600 "$r/src/a.c"; assert_eq '[]' "$(viol "$r")"
+  cp -p "$r/src/b.c" "$HOME/ref"; printf 'B\n' >"$HOME/new"; mv "$HOME/new" "$r/src/b.c"; touch -r "$HOME/ref" "$r/src/b.c"
+  assert_eq '["src/b.c"]' "$(viol "$r")"; }
+test_p29_git_missing_fails_closed() { local r rc out
+  load_ga; r=$(git_proj); ga_effect_snapshot "$r"
+  rc=0; out=$(GA_TEST_GIT=/nonexistent/git ga --root "$r" effect check 2>/dev/null) || rc=$?
+  assert_eq 1 "$rc"; assert_contains "$(jq -r '.violations[0]' <<<"$out")" "git 없음"; }
+# Non-git projects record ctime and inode too: a same-size replacement with the old mtime is a change.
+test_p29_non_git_records_ctime_and_inode() { local r f
+  load_ga; r=$(mk_project brownfield); ga --root "$r" init >/dev/null; set_state "$r" '.phase="iterating"'; ga_effect_snapshot "$r"
+  f=$r/src/main.c; cp -p "$f" "$HOME/ref"; sed 's/0/1/' "$f" >"$HOME/new"; mv "$HOME/new" "$f"; touch -r "$HOME/ref" "$f"
+  assert_eq '["src/main.c"]' "$(viol "$r")"; }
+
+# --- P32 ---
+# M1: only the folder names (.Spotlight-V100, .Trashes) hide what is under them; a file-type name used as
+# a folder hides nothing.
+test_p32_os_meta_file_names_hide_no_folder() { local r
+  load_ga; r=$(git_proj); ga_effect_snapshot "$r"
+  mkdir -p "$r/src/._vendor" "$r/src/.DS_Store" "$r/.Trashes/a"; echo p >"$r/src/._vendor/payload.c"; echo x >"$r/src/.DS_Store/x"
+  echo t >"$r/.Trashes/a/t"; echo d >"$r/src/._b.c"
+  assert_eq '["src/.DS_Store/x","src/._vendor/payload.c"]' "$(viol "$r")"; }
+# File names are filtered in the C locale: a committed name that is not valid UTF-8 (git trees can hold
+# any bytes) cannot cut the list short and hide the files after it.
+test_p32_name_filters_survive_invalid_utf8() { local r b
+  load_ga; r=$(git_proj); b=$(git -C "$r" rev-parse HEAD:src/a.c)
+  git -C "$r" update-index --add --cacheinfo "100644,$b,0$(printf '\377').c"; git -C "$r" commit -qm odd
+  ga_effect_snapshot "$r"; echo y >>"$r/src/a.c"
+  assert_eq '["src/a.c"]' "$(viol "$r")"; }
