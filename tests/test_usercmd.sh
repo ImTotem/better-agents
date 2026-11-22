@@ -147,3 +147,6 @@ test_i6_corrupt_state_other_commands_explain_recovery() { local r out
 test_i9_approval_context_shows_runner_paths() { local r out
   r=$(ready_inputs); out=$(uc "$r" 'GA 승인 입력'); assert_eq allow "$(dec "$out")"
   assert_contains "$(jq -r .context <<<"$out")" "$REPO/tests/fakes/claude"; }
+test_state_accept_verb_listed_and_recorded() { r=$(ready_inputs); . "$CORE/lib/usercmd.sh"; assert_contains " $GA_VERBS " " 상태승인 "
+  out=$(uc "$r" "GA 상태승인"); assert_eq allow "$(dec "$out")"; assert_contains "$out" "상태 지문"; assert_eq 상태승인 "$(tail -n1 "$r/docs/architecture/.state/approvals.jsonl" | jq -r .point)"; }
+test_state_accept_trailing_text_blocks() { r=$(ready_inputs); out=$(uc "$r" "GA 상태승인 확인"); assert_eq block "$(dec "$out")"; assert_contains "$out" "다른 글자"; }

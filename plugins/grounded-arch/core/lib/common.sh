@@ -79,6 +79,9 @@ ga_write_json() { # FILE
     ga_die "ga: invalid JSON, not writing $f" 2
   fi
   mv "$tmp" "$f"
+  # A state file was written: the command ends by recording the state fingerprint (fingerprint.sh).
+  case "$f" in */docs/architecture/.state/*) : >"${f%/*}/.lock/dirty" 2>/dev/null ;; esac
+  return 0
 }
 
 # Reentrant within one process: only the outermost ga_lock creates the lock dir and only the
@@ -103,6 +106,7 @@ ga_lock() { # ROOT
     sleep 0.1
   done
   GA_LOCK_DEPTH=1
+  if type _ga_fp_begin >/dev/null 2>&1; then _ga_fp_begin "$1"; fi
 }
 
 ga_unlock() { # ROOT
@@ -110,6 +114,8 @@ ga_unlock() { # ROOT
     GA_LOCK_DEPTH=$((GA_LOCK_DEPTH - 1))
     return 0
   fi
+  if type _ga_fp_finish >/dev/null 2>&1; then _ga_fp_finish "$1"; fi
+  rm -f "$1/docs/architecture/.state/.lock/dirty" "$1/docs/architecture/.state/.lock/force" "$1/docs/architecture/.state/.lock/premismatch"
   GA_LOCK_DEPTH=0
   rmdir "$1/docs/architecture/.state/.lock" 2>/dev/null
   return 0

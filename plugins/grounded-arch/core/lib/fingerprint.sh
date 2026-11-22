@@ -1,0 +1,82 @@
+# grounded-arch G-effect: state fingerprint. Sourced; bash 3.2 + jq. Only defines functions.
+# The fingerprint is the sha256 of the sorted list "relative-path content-sha256" of every file in
+# the state folder (the lock dir and temp files excluded). It is stored OUTSIDE the project, so a
+# direct edit of a state file (which skips ga) shows up as a mismatch (spec 5.5).
+# Recording happens at the outermost ga_unlock, only when the command wrote a state file. The
+# "wrote" signal is a marker file inside the lock dir (.lock/dirty), so it survives $(...) subshells.
+
+_ga_fp_sha() { # stdin -> sha256 hex
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256 | cut -d' ' -f1; else sha256sum | cut -d' ' -f1; fi
+}
+
+ga_fp_dir() { echo "${GA_DATA_DIR:-$HOME/.local/state/grounded-arch}"; }
+
+ga_fp_path() { # ROOT -> path of the fingerprint file
+  local c
+  c=$(ga_canon "$1") || return 1
+  echo "$(ga_fp_dir)/$(printf '%s' "$c" | _ga_fp_sha).json"
+}
+
+_ga_fp_compute() { # ROOT -> fingerprint hex
+  local sd
+  sd=$(ga_state_dir "$1")
+  ( cd "$sd" 2>/dev/null || exit 1
+    LC_ALL=C find . -type f ! -path './.lock/*' ! -path './.lock.stale.*' ! -name '*.tmp.*' ! -name '*.restore.*' 2>/dev/null |
+      LC_ALL=C sort | while IFS= read -r f; do
+        printf '%s %s\n' "${f#./}" "$(_ga_fp_sha <"$f")"
+      done ) | _ga_fp_sha
+}
+
+ga_fp_record() { # ROOT
+  local p fp c tmp
+  p=$(ga_fp_path "$1") || return 1
+  c=$(ga_canon "$1") || return 1
+  fp=$(_ga_fp_compute "$1") || return 1
+  mkdir -p "$(dirname "$p")" || return 1
+  tmp="$p.tmp.$$"
+  jq -nc --arg r "$c" --arg f "$fp" --arg t "$(ga_now)" '{root:$r, fingerprint:$f, ts:$t}' >"$tmp" && mv "$tmp" "$p"
+}
+
+# rc 0 match, 1 mismatch, 2 nothing recorded (or unreadable record)
+ga_fp_check() { # ROOT
+  local p want got
+  p=$(ga_fp_path "$1") || return 2
+  [ -f "$p" ] || return 2
+  want=$(jq -r '.fingerprint // empty' "$p" 2>/dev/null)
+  [ -n "$want" ] || return 2
+  got=$(_ga_fp_compute "$1") || return 1
+  [ "$want" = "$got" ]
+}
+
+# Marks the running locked command: dirty = it wrote a state file; force = record even when the
+# fingerprint did not match before the command (GA 상태승인); pre-mismatch = set by ga_lock.
+ga_fp_mark() { # ROOT [dirty|force]
+  : >"$(ga_state_dir "$1")/.lock/${2:-dirty}" 2>/dev/null
+  return 0
+}
+
+# Called by the outermost ga_unlock while the lock is still held.
+_ga_fp_finish() { # ROOT
+  local l
+  l=$(ga_state_dir "$1")/.lock
+  if [ -e "$l/dirty" ] && { [ -e "$l/force" ] || [ ! -e "$l/premismatch" ]; }; then
+    ga_fp_record "$1" 2>/dev/null
+  fi
+  rm -f "$l/dirty" "$l/force" "$l/premismatch"
+  return 0
+}
+
+# Called by the outermost ga_lock right after the lock is taken: remember a pre-existing mismatch,
+# so a later write by this command cannot silently re-baseline a direct edit.
+_ga_fp_begin() { # ROOT
+  local rc=0
+  ga_fp_check "$1" >/dev/null 2>&1 || rc=$?
+  [ "$rc" = 1 ] && ga_fp_mark "$1" premismatch
+  return 0
+}
+
+# Drops this command's pending record (used when its changes are rolled back).
+ga_fp_discard() { # ROOT
+  rm -f "$(ga_state_dir "$1")/.lock/dirty" "$(ga_state_dir "$1")/.lock/force"
+  return 0
+}

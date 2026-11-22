@@ -1,7 +1,7 @@
 # grounded-arch user commands: ga user-command. Sourced; bash 3.2 + jq. Only defines functions/variables.
 # Output: one JSON line {"decision":"allow|block","reason":"...","context":"..."}, exit 0; exit 2 on internal failure.
 
-GA_VERBS="승인 확인 답 기각 판정 일시정지 재개 되돌리기 새라운드 테스트명령"
+GA_VERBS="승인 확인 답 기각 판정 일시정지 재개 되돌리기 새라운드 테스트명령 상태승인"
 
 # Per-command accumulators (reset by cmd_user_command).
 GA_UC_FAILS=""   # newline-separated failure reasons
@@ -108,7 +108,8 @@ _uc_append_approval() { # ROOT POINT FROM TO ROUND ITER QUOTE
   f=$(ga_state_dir "$1")/approvals.jsonl
   line=$(jq -nc --arg ts "$(ga_now)" --arg p "$2" --arg f "$3" --arg t "$4" --argjson r "$5" --argjson i "$6" --arg q "$7" \
     '{ts:$ts, point:$p, phase_from:$f, phase_to:$t, round:$r, iteration:$i, quote:$q}') || return 2
-  { [ -f "$f" ] && cat "$f"; printf '%s\n' "$line"; } >"$f.tmp.$$" && mv "$f.tmp.$$" "$f"
+  { [ -f "$f" ] && cat "$f"; printf '%s\n' "$line"; } >"$f.tmp.$$" && mv "$f.tmp.$$" "$f" || return 2
+  ga_fp_mark "$1"
 }
 
 _uc_approve() { # ROOT POINT QUOTE
@@ -298,12 +299,14 @@ _uc_apply() {
       # R31a: the PAUSED marker works even when state.json is unreadable.
       _uc_noargs 일시정지 "$rest" || return 1
       : >"$(ga_state_dir "$root")/PAUSED" || return 2
+      ga_fp_mark "$root"
       if [ "$GA_UC_STATE_OK" = 1 ]; then ga_state_set "$root" '.paused = true' || return 2; fi
       _uc_sum "기록됨: 일시정지 (게이트가 모두 통과합니다. 'GA 재개'로 되돌립니다)"
       ;;
     재개)
       _uc_noargs 재개 "$rest" || return 1
       rm -f "$(ga_state_dir "$root")/PAUSED" || return 2
+      ga_fp_mark "$root"
       if [ "$GA_UC_STATE_OK" = 1 ]; then ga_state_set "$root" '.paused = false' || return 2; fi
       _uc_sum "기록됨: 재개"
       [ "$GA_UC_STATE_OK" = 1 ] || _uc_sum "주의: state.json을 읽을 수 없어 게이트가 다시 막습니다. docs/architecture/.state/state.json을 고치거나 복원하세요"
@@ -337,11 +340,18 @@ _uc_apply() {
       _uc_sum "기록됨: 새 라운드 $(ga_state_get "$root" .round) / 단계 implement→inputs"
       GA_UC_NEXT="새 라운드의 입력(드라이버, 제약, 가정)을 정리하고 ga verify, 'GA 승인 입력'을 진행하세요."
       ;;
+    상태승인)
+      _uc_noargs 상태승인 "$rest" || return 1
+      _uc_append_approval "$root" 상태승인 "" "" 0 0 "$quote" || return 2
+      ga_fp_mark "$root" force
+      _uc_sum "기록됨: 상태 지문을 현재 상태 파일 기준으로 다시 기록했습니다"
+      ;;
     테스트명령)
       [ -n "$rest" ] || { _uc_fail "사용법: GA 테스트명령 <빌드·테스트 명령> (명령이 비어 있으면 안 됩니다)"; return 1; }
       local f
       f=$(ga_state_dir "$root")/test_command
       printf '%s\n' "$(_uc_trim "$rest")" >"$f.tmp.$$" && mv "$f.tmp.$$" "$f" || return 2
+      ga_fp_mark "$root"
       _uc_sum "기록됨: 테스트 명령 = $(_uc_trim "$rest")"
       ;;
     *)
@@ -357,7 +367,7 @@ GA_UC_BDIR=""; GA_UC_ROOT=""; GA_UC_LOCKED=0; GA_UC_RESTORE=0; GA_UC_STATE_OK=1
 # Safe to call more than once; used both on exit paths and for the normal finish.
 _uc_abort() {
   if [ -n "$GA_UC_BDIR" ] && [ -d "$GA_UC_BDIR" ]; then
-    [ "$GA_UC_RESTORE" = 1 ] && _uc_restore "$GA_UC_ROOT" "$GA_UC_BDIR"
+    [ "$GA_UC_RESTORE" = 1 ] && { _uc_restore "$GA_UC_ROOT" "$GA_UC_BDIR"; ga_fp_discard "$GA_UC_ROOT"; }
     rm -rf "$GA_UC_BDIR"
   fi
   GA_UC_BDIR=""; GA_UC_RESTORE=0
