@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "ga": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/core/mcp/server.sh",
+      "env": { "GA_HARNESS": "claude-code" }
+    }
+  }
+}
