@@ -164,7 +164,8 @@ test_ga_init_installs_isolation_before_snapshot() {
   local r; r=$(phys "$(mk_project)")
   GA_HARNESS=claude-code ga --root "$r" init >/dev/null
   assert_eq true "$(jq -r .sandbox.enabled "$r/.claude/settings.local.json")"
-  assert_contains "$(jq -c .files "$r/docs/architecture/.state/snapshot.json")" ".claude/settings.local.json"
+  # P29: the per-file records live in snapshot.list ("STAT REF PATH")
+  assert_contains "$(cat "$r/docs/architecture/.state/snapshot.list")" " .claude/settings.local.json"
 }
 
 # --- final fix wave ---
@@ -269,4 +270,40 @@ test_enforce_exec_protects_state_and_parents() {
   assert_eq true "$(jq -r .sandbox.enabled "$r/.claude/settings.local.json")"; [ -f "$r/ok.txt" ] || _fail "ordinary write failed"
   rc=0; GA_TEST_SANDBOX_EXEC=/nonexistent/sandbox-exec "$ENF" exec "$r" -- /bin/sh -c 'echo ran >"$1/ran"' _ "$r" 2>"$HOME/err" || rc=$?
   [ "$rc" != 0 ] || _fail "ran without a sandbox"; [ ! -e "$r/ran" ] || _fail "ran without a sandbox"; assert_contains "$(cat "$HOME/err")" "격리 실행 도구 없음"
+}
+
+# --- second fix wave (P27): the build sandbox denies writes by default ---
+# The build may write the project, a temp folder made for the run and the folders the user gave the
+# agent's shell (sandbox.filesystem.allowWrite); nothing else -- not the home directory, the user's
+# TMPDIR or PATH folders -- and inside those, not the git folder, .claude or the design state.
+test_p27_exec_denies_writes_by_default() {
+  local r o out rt p; [ -x /usr/bin/sandbox-exec ] || command -v bwrap >/dev/null 2>&1 || return 0
+  export GA_TEST_MANAGED_SETTINGS=/nonexistent
+  r=$(phys "$(mk_project)"); git -C "$r" init -q; GA_HARNESS=claude-code ga --root "$r" init >/dev/null
+  mkdir -p "$r/src" "$r/.claude/hooks" "$HOME/.claude" "$HOME/.local/bin" "$HOME/Library/LaunchAgents" "$HOME/cache"
+  echo '{"sandbox":{"filesystem":{"allowWrite":["~/cache"]}}}' >"$HOME/.claude/settings.json"
+  o=$(phys "${TMPDIR:-/tmp}")
+  out=$("$ENF" exec "$r" -- /bin/bash -c '
+    t() { if ( : >>"$1" ) 2>/dev/null; then echo "W $1"; else echo "D $1"; fi; }
+    echo "TMP $TMPDIR"; t "$1/src/x"; t "$TMPDIR/x"; t "$HOME/cache/x"
+    t "$HOME/.local/bin/x"; t "$HOME/.gitconfig"; t "$HOME/Library/LaunchAgents/x"; t "$1/.git/commondir"; t "$1/.git/index"
+    t "$1/.claude/hooks/x"; t "$2/ga-p27-probe"; t "$1/docs/architecture/.state/x"' _ "$r" "$o" 2>/dev/null)
+  rt=$(sed -n 's/^TMP //p' <<<"$out")
+  [ -n "$rt" ] && [ "$(phys "$rt" 2>/dev/null || echo "$rt")" != "$o" ] || _fail "the build got the user's TMPDIR: [$rt]"
+  assert_contains "$out" "W $r/src/x"; assert_contains "$out" "W $rt/x"; assert_contains "$out" "W $HOME/cache/x"
+  for p in "$HOME/.local/bin/x" "$HOME/.gitconfig" "$HOME/Library/LaunchAgents/x" "$r/.git/commondir" "$r/.git/index" \
+           "$r/.claude/hooks/x" "$o/ga-p27-probe" "$r/docs/architecture/.state/x"; do
+    assert_contains "$out" "D $p"
+  done
+  [ ! -e "$rt" ] || _fail "the run's temp folder was not removed: $rt"
+}
+
+# --- P32 (M2): the texts do not claim the fingerprint catches what it cannot ---
+test_p32_texts_do_not_overstate_the_fingerprint() {
+  local c r out; c=$(cat "$PLUGIN/adapters/claude-code/capabilities.json")
+  assert_not_contains "$c" "격리 밖에서 실행되는 파일은 읽기 전용"; assert_not_contains "$c" "상태 폴더는 지문이 지킨다"
+  r=$(phys "$(mk_project)"); "$ENF" install "$r" >/dev/null
+  echo '{"sandbox":{"excludedCommands":["docker *"]}}' >"$r/.claude/settings.json"
+  out=$(GA_TEST_MANAGED_SETTINGS=/nonexistent "$ENF" status "$r" | jq -r '.warnings[0]')
+  assert_contains "$out" "docker *"; assert_not_contains "$out" "상태 지문 확인이 잡습니다"
 }

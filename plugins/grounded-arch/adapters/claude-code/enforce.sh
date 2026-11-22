@@ -11,23 +11,27 @@
 #                                  exit 0 when canonical PATH is a Claude Code settings file
 #                                  (.claude/settings*.json of ROOT, of the main checkout, of ~/.claude
 #                                  or CLAUDE_CONFIG_DIR); exit 3 when Claude Code runs it outside the
-#                                  sandbox (.mcp.json of the project, ~/.claude.json, ~/.claude/plugins);
-#                                  1 if neither
+#                                  sandbox (.mcp.json and .claude/hooks of the project, ~/.claude.json,
+#                                  ~/.claude/plugins); 1 if neither. The core protects both only while a
+#                                  design exists (P30).
 #        enforce.sh protects ROOT --list
 #                                  the same for paths on stdin: prints "0 PATH" or "3 PATH" lines
 #        enforce.sh exec ROOT [--protect PATH]... -- CMD [ARG...]
-#                                  runs CMD in an OS sandbox (macOS sandbox-exec, Linux bwrap) where
-#                                  the state folder, the settings files, the plugin folder, the files
-#                                  Claude Code runs outside the sandbox and each PATH are read-only;
-#                                  exit 125 with "격리 실행 도구 없음" when there is no sandbox tool
+#                                  runs CMD in an OS sandbox (macOS sandbox-exec, Linux bwrap) that
+#                                  denies writes by default (P27): CMD may write ROOT, a fresh temp
+#                                  folder (its TMPDIR, TMP and TEMP; removed afterwards) and the folders
+#                                  of the effective sandbox.filesystem.allowWrite, but never the git
+#                                  folder, .claude, .mcp.json, the state folder, the plugin folder, the
+#                                  Claude Code files in the home directory or each PATH. CMD gets the
+#                                  user's PATH (GA_USER_PATH). Exit 125 with "격리 실행 도구 없음" when
+#                                  there is no sandbox tool
 # No git command is run. bash 3.2 + jq only. status runs on every shell command: one jq call.
 
-# This runs outside the OS sandbox: no relative PATH entry is ever searched, jq by absolute path.
-_p=""; _o=$IFS; IFS=:; set -f
-for _e in $PATH; do case "$_e" in /*) _p=${_p:+$_p:}$_e ;; esac; done
-set +f; IFS=$_o; PATH=$_p; export PATH; unset _p _o _e
+# This runs outside the OS sandbox (spec 5.5, P28): only system tools, jq is /usr/bin/jq.
+GA_USER_PATH=${GA_USER_PATH:-$PATH}
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export GA_USER_PATH PATH
 GA_JQ=/usr/bin/jq
-[ -x "$GA_JQ" ] || GA_JQ=$(type -P jq 2>/dev/null) || GA_JQ=/nonexistent/jq
 if [ "${GA_TEST_MODE:-}" = 1 ] && [ -n "${GA_TEST_JQ:-}" ]; then GA_JQ=$GA_TEST_JQ; fi
 jq() { "$GA_JQ" "$@"; }
 
@@ -41,35 +45,53 @@ PLUGIN_ROOT=$(cd -P "$(dirname "$_self")/../.." && pwd)
 
 die() { echo "$1" >&2; exit "${2:-2}"; }
 
+# P31: the one spelling of existing directory D (the core's ga_phys_dir): symlinks resolved, the
+# letter case stored on disk (/bin/realpath), no /System/Volumes/Data prefix for the same folder.
+phys_dir() { # D
+  local p="" s ids
+  if [ -x /bin/realpath ]; then p=$(/bin/realpath "$1" 2>/dev/null) || p=""; fi
+  case "$p" in /*) [ -d "$p" ] || p="" ;; *) p="" ;; esac
+  [ -n "$p" ] || p=$(cd -P "$1" 2>/dev/null && pwd -P) || return 1
+  case "$p" in
+    /System/Volumes/Data/?*)
+      s=${p#/System/Volumes/Data}
+      ids=$(stat -c '%d:%i' "$p" "$s" 2>/dev/null || stat -f '%d:%i' "$p" "$s" 2>/dev/null) || :
+      case "$ids" in ?*$'\n'?*) if [ "${ids%%$'\n'*}" = "${ids#*$'\n'}" ]; then p=$s; fi ;; esac ;;
+  esac
+  printf '%s\n' "$p"
+}
+
 # Resolves PATH (absolute, or relative to BASE) to a physical absolute path; fails if not a directory.
 resolve_dir() { # PATH BASE
-  case "$1" in /*) (cd -P "$1" 2>/dev/null && pwd -P) ;; *) (cd -P "$2/$1" 2>/dev/null && pwd -P) ;; esac
+  case "$1" in /*) phys_dir "$1" ;; *) phys_dir "$2/$1" ;; esac
 }
 
 # Canonical form of directory D, which need not exist (its parent is resolved instead).
 canon_dir() { # D
-  if [ -d "$1" ]; then (cd -P "$1" 2>/dev/null && pwd -P) && return 0; fi
-  printf '%s/%s\n' "$(cd -P "$(dirname "$1")" 2>/dev/null && pwd -P)" "$(basename "$1")"
+  if [ -d "$1" ]; then phys_dir "$1" && return 0; fi
+  printf '%s/%s\n' "$(phys_dir "$(dirname "$1")")" "$(basename "$1")"
 }
 
-is_bare() { grep -Eiq '^[[:space:]]*bare[[:space:]]*=[[:space:]]*true[[:space:]]*$' "$1/config" 2>/dev/null; } # GITDIR
+is_bare() { LC_ALL=C grep -Eiq '^[[:space:]]*bare[[:space:]]*=[[:space:]]*true[[:space:]]*$' "$1/config" 2>/dev/null; } # GITDIR
 
 # Sets MAIN (the checkout whose .claude/settings.local.json Claude Code reads: the repository root, the
 # main checkout for a worktree), COMMON (common git dir, "" when not git) and LAYOUT_ERR. P24: a layout
 # where that file cannot be named with certainty (a bare repository, a .git file whose git dir has no
 # commondir, a common dir that is not a checkout's .git) sets LAYOUT_ERR: install refuses, status is
 # inactive.
-find_main() { # ROOT
+find_main() { # ROOT  (also sets GITDIR, the repository's own git dir, and GITENT, its .git entry)
   local d=$1 gd cdir line
-  MAIN=$1; COMMON=""; LAYOUT_ERR=""
+  MAIN=$1; COMMON=""; LAYOUT_ERR=""; GITDIR=""; GITENT=""
   while :; do
     if [ -d "$d/.git" ]; then
-      MAIN=$d; COMMON=$d/.git
+      MAIN=$d; COMMON=$d/.git; GITDIR=$COMMON; GITENT=$d/.git
       is_bare "$COMMON" && LAYOUT_ERR="${COMMON} 이(가) bare 저장소로 설정되어 있습니다"
       return 0
     elif [ -f "$d/.git" ]; then
-      line=$(sed -n 's/^gitdir: *//p' "$d/.git" | head -n 1)
+      GITENT=$d/.git
+      line=$(LC_ALL=C sed -n 's/^gitdir: *//p' "$d/.git" | head -n 1)
       gd=$(resolve_dir "$line" "$d") || { LAYOUT_ERR="${d}/.git 이 가리키는 git 폴더를 찾을 수 없습니다"; return 0; }
+      GITDIR=$gd
       if [ ! -f "$gd/commondir" ]; then
         LAYOUT_ERR="${d}/.git 이 가리키는 git 폴더(${gd})에 commondir 이 없습니다(서브모듈이나 --separate-git-dir 저장소)"; return 0
       fi
@@ -105,7 +127,7 @@ WANT='{"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false}
 do_install() {
   local obj created=false old tmp deny both excl=false
   [ -z "$LAYOUT_ERR" ] || die "enforce: 격리 설정을 쓰지 않았습니다. ${LAYOUT_MSG}: ${LAYOUT_ERR}" 2
-  command -v jq >/dev/null 2>&1 || die "enforce: jq가 필요합니다" 2
+  [ -x "$GA_JQ" ] || die "enforce: jq(${GA_JQ})가 필요합니다" 2
   mkdir -p "$MAIN/.claude" || die "enforce: $MAIN/.claude 를 만들 수 없습니다" 2
   if [ -s "$SETTINGS" ]; then
     jq -e 'type == "object"' "$SETTINGS" >/dev/null 2>&1 || die "enforce: $SETTINGS 이(가) 올바른 JSON 객체가 아니어서 합칠 수 없습니다. 파일을 고친 뒤 다시 실행하세요" 2
@@ -139,7 +161,7 @@ do_install() {
   mv "$tmp" "$SETTINGS" || { rm -f "$tmp"; die "enforce: 설정 파일을 쓸 수 없습니다" 2; }
   if [ -n "$COMMON" ]; then
     mkdir -p "$COMMON/info" 2>/dev/null
-    if ! grep -Fxq '.claude/settings.local.json' "$COMMON/info/exclude" 2>/dev/null; then
+    if ! LC_ALL=C grep -Fxq '.claude/settings.local.json' "$COMMON/info/exclude" 2>/dev/null; then
       if printf '%s\n' '.claude/settings.local.json' >>"$COMMON/info/exclude"; then
         excl=true
       else
@@ -188,7 +210,7 @@ do_uninstall() {
   fi
   if [ -n "$COMMON" ] && [ "$(jq -r '.exclude_added // false' "$RECORD")" = true ] && [ -f "$COMMON/info/exclude" ]; then
     tmp=$(mktemp "$COMMON/info/.exclude.XXXXXX") &&
-      awk '!d && $0 == ".claude/settings.local.json" { d = 1; next } { print }' "$COMMON/info/exclude" >"$tmp" &&
+      LC_ALL=C awk '!d && $0 == ".claude/settings.local.json" { d = 1; next } { print }' "$COMMON/info/exclude" >"$tmp" &&
       mv "$tmp" "$COMMON/info/exclude" || { rm -f "$tmp"; echo "enforce: 경고: $COMMON/info/exclude 의 줄을 지우지 못했습니다" >&2; }
   fi
   echo "$SETTINGS"
@@ -198,16 +220,21 @@ out() { jq -nc --argjson a "$1" --arg r "$2" --arg s "$SETTINGS" '{active:$a, re
 
 readable() { if [ -f "$1" ] && [ -r "$1" ]; then echo "$1"; else echo /dev/null; fi; } # FILE -> FILE or /dev/null
 
+# The managed settings file of this OS (a test file only in test mode).
+managed_settings() {
+  if [ "${GA_TEST_MODE:-}" = 1 ] && [ -n "${GA_TEST_MANAGED_SETTINGS:-}" ]; then echo "$GA_TEST_MANAGED_SETTINGS"; return; fi
+  case "${OSTYPE:-}" in
+    darwin*) echo "/Library/Application Support/ClaudeCode/managed-settings.json" ;;
+    *) echo /etc/claude-code/managed-settings.json ;;
+  esac
+}
+
 do_status() {
   local managed os=${OSTYPE:-}
   if [ "${GA_TEST_MODE:-}" = 1 ] && [ -n "${GA_TEST_OSTYPE:-}" ]; then os=$GA_TEST_OSTYPE; fi
   case "$os" in msys* | cygwin* | win32*) out false "윈도우(WSL 제외)에서는 Claude Code가 셸 명령을 격리 없이 실행합니다" ;; esac
   [ -z "$LAYOUT_ERR" ] || out false "${LAYOUT_MSG}: ${LAYOUT_ERR}"
-  case "$os" in
-    darwin*) managed="/Library/Application Support/ClaudeCode/managed-settings.json" ;;
-    *) managed=/etc/claude-code/managed-settings.json ;;
-  esac
-  if [ "${GA_TEST_MODE:-}" = 1 ] && [ -n "${GA_TEST_MANAGED_SETTINGS:-}" ]; then managed=$GA_TEST_MANAGED_SETTINGS; fi
+  managed=$(managed_settings)
   if [ ! -f "$SETTINGS" ] || [ ! -r "$SETTINGS" ]; then out false "격리 설정 파일이 없거나 읽을 수 없습니다: $SETTINGS (ga enforce 로 설치하세요)"; fi
   # Highest precedence first: managed, local, project, user. Unreadable or invalid non-local files
   # are skipped; an invalid local file is reported. P22: excludedCommands (merged across files) run
@@ -219,7 +246,7 @@ do_status() {
     | ([($m | obj), $lo, ($p | obj), ($u | obj)] | map(select(. != null))) as $fs
     | ([$fs[] | try .sandbox.excludedCommands[] | strings] | unique) as $ex
     | def res($a; $r): {active: $a, reason: $r, settings: $s,
-        warnings: (if ($ex | length) > 0 then ["sandbox.excludedCommands에 맞는 명령(\($ex | join(", ")))은 격리 밖에서 사용자 권한으로 실행되어 설계 상태 폴더도 바꿀 수 있습니다. 그런 변경은 상태 지문 확인이 잡습니다"] else [] end)};
+        warnings: (if ($ex | length) > 0 then ["sandbox.excludedCommands에 맞는 명령(\($ex | join(", ")))은 격리 밖에서 사용자 권한으로 실행됩니다. 그런 명령은 설계 상태 폴더와 프로젝트 밖의 상태 지문 기록을 함께 바꿀 수도 있어서, 상태 지문 확인으로도 드러나지 않을 수 있습니다. 설계 중에는 그 명령을 쓰지 않거나 목록에서 빼세요"] else [] end)};
       if $lo == null then res(false; "격리 설정 파일이 올바른 JSON이 아닙니다: \($s)")
       else
         ([$fs[] | try .sandbox.enabled | select(. != null)] | .[0]) as $en
@@ -232,19 +259,21 @@ do_status() {
       end' 2>/dev/null || out false "설정을 읽지 못했습니다"
 }
 
-# The directories and files protects and exec judge (physical paths).
+# The directories and files protects and exec judge (physical paths in one spelling, P31).
 protect_dirs() {
   local h
-  h=$(cd -P "$HOME" 2>/dev/null && pwd -P) || h=$HOME
+  h=$(phys_dir "$HOME") || h=$HOME
   HOME_P=$h
   HOME_C=$(canon_dir "$HOME/.claude")
   CFG_C=""; [ -n "${CLAUDE_CONFIG_DIR:-}" ] && CFG_C=$(canon_dir "$CLAUDE_CONFIG_DIR")
   ROOT_C=$(canon_dir "$ROOT/.claude"); MAIN_C=$(canon_dir "$MAIN/.claude")
   SESS_P=""; [ -n "${CLAUDE_PROJECT_DIR:-}" ] && SESS_P=$(resolve_dir "$CLAUDE_PROJECT_DIR" /) || SESS_P=""
+  SESS_C=""; [ -z "$SESS_P" ] || SESS_C=$(canon_dir "$SESS_P/.claude")
 }
 
 # 0: a settings file with the isolation settings; 3: a file Claude Code runs outside the sandbox
-# (P20); 1: neither. Case-folded: APFS is case-insensitive.
+# (P20; P30 adds the project's .claude/hooks, whose scripts hooks run); 1: neither. Case-folded:
+# APFS is case-insensitive.
 protect_kind() { # PATH (canonical)
   local p=$1 d n dir
   d=${p%/*}; n=${p##*/}
@@ -252,6 +281,10 @@ protect_kind() { # PATH (canonical)
   for dir in "$HOME_C" "$CFG_C"; do
     [ -n "$dir" ] || continue
     [[ $p == "$dir/plugins" || $p == "$dir/plugins/"* ]] && return 3
+  done
+  for dir in "$ROOT_C" "$MAIN_C" "$SESS_C"; do
+    [ -n "$dir" ] || continue
+    [[ $p == "$dir/hooks" || $p == "$dir/hooks/"* ]] && return 3
   done
   [[ $p == "$HOME_P/.claude.json" ]] && return 3
   [ -n "$CFG_C" ] && [[ $p == "$CFG_C/.claude.json" ]] && return 3
@@ -280,9 +313,41 @@ do_protects() { # PATH | --list
 # SBPL string literal.
 sb_str() { local s=$1; s=${s//\\/\\\\}; s=${s//\"/\\\"}; printf '"%s"' "$s"; }
 
+# Canonical form of an existing PATH (folder or file); fails when it does not exist.
+canon_existing() { # PATH
+  if [ -d "$1" ]; then phys_dir "$1"; return; fi
+  [ -e "$1" ] || [ -L "$1" ] || return 1
+  printf '%s/%s\n' "$(phys_dir "$(dirname "$1")")" "$(basename "$1")"
+}
+
+# P27: the folders of the effective sandbox.filesystem.allowWrite -- the write scope the user already
+# gave the agent's own sandboxed shell (managed, user, project and local settings; arrays merge) --
+# one physical path per line. "~/x" is in the home directory; a relative entry counts only in the
+# project's own settings files (from the session's project root). Entries with glob characters and
+# paths that do not exist are left out: the build never gets more than the agent's shell.
+allow_write_paths() {
+  local base=${SESS_P:-$ROOT} scope e
+  jq -nr --rawfile m "$(readable "$(managed_settings)")" --rawfile u "$(readable "$HOME/.claude/settings.json")" \
+    --rawfile p "$(readable "$ROOT/.claude/settings.json")" --rawfile l "$(readable "$SETTINGS")" '
+    def obj: (try fromjson catch null) | if type == "object" then . else {} end;
+    def aw($s): (try .sandbox.filesystem.allowWrite catch null) | if type == "array" then .[] | strings | $s + "\t" + . else empty end;
+    ($m | obj | aw("g")), ($u | obj | aw("g")), ($p | obj | aw("p")), ($l | obj | aw("p"))' 2>/dev/null |
+    while IFS=$'\t' read -r scope e; do
+      case "$e" in "" | *'*'* | *'?'* | *'['* | *$'\n'*) continue ;; esac
+      case "$e" in
+        "~") e=$HOME ;;
+        "~/"*) e=$HOME/${e#"~/"} ;;
+        //*) e=/${e#//} ;;
+        /*) ;;
+        *) [ "$scope" = p ] || continue; e=$base/$e ;;
+      esac
+      canon_existing "$e" 2>/dev/null
+    done
+}
+
 do_exec() { # [--protect PATH]... -- CMD...
-  local -a extra=() prot=() bw_args=()
-  local p a seen=$'\n' prof sbx bw
+  local -a extra=() prot=() allow=() bw_args=()
+  local p a seen=$'\n' prof sbx bw rt rc
   while [ $# -gt 0 ]; do
     case "$1" in
       --protect) [ $# -ge 2 ] || die "$USAGE" 2; extra+=("$2"); shift 2 ;;
@@ -292,21 +357,47 @@ do_exec() { # [--protect PATH]... -- CMD...
   done
   [ $# -gt 0 ] || die "$USAGE" 2
   protect_dirs
-  prot=("$SD" "$PLUGIN_ROOT" "$HOME_C/settings.json" "$HOME_C/settings.local.json" "$HOME_C/plugins" "$HOME_P/.claude.json"
-        "$ROOT_C/settings.json" "$ROOT_C/settings.local.json" "$MAIN_C/settings.json" "$MAIN_C/settings.local.json"
-        "$ROOT/.mcp.json" "$MAIN/.mcp.json")
+  # Written again (denied) inside the writable folders: the design state, the plugin, the whole git
+  # folder and the repository's .git entry, .claude and .mcp.json of the project, the main checkout
+  # and the session, the Claude Code files in the home directory, and each --protect PATH.
+  prot=("$SD" "$PLUGIN_ROOT" "$ROOT/.git" "$ROOT_C" "$MAIN_C" "$ROOT/.mcp.json" "$MAIN/.mcp.json"
+        "$HOME_C/settings.json" "$HOME_C/settings.local.json" "$HOME_C/plugins" "$HOME_P/.claude.json")
+  [ -z "$COMMON" ] || prot+=("$COMMON")
+  [ -z "$GITDIR" ] || prot+=("$GITDIR")
+  [ -z "$GITENT" ] || prot+=("$GITENT")
+  [ -z "$SESS_P" ] || prot+=("$SESS_C" "$SESS_P/.mcp.json" "$SESS_P/.git")
   [ -z "$CFG_C" ] || prot+=("$CFG_C/settings.json" "$CFG_C/settings.local.json" "$CFG_C/plugins" "$CFG_C/.claude.json")
-  [ -z "$COMMON" ] || prot+=("$COMMON/config" "$COMMON/hooks")
   for p in ${extra[@]+"${extra[@]}"}; do prot+=("$(canon_dir "$p")"); done
 
   sbx=/usr/bin/sandbox-exec
-  bw=/usr/bin/bwrap; [ -x "$bw" ] || bw=$(type -P bwrap 2>/dev/null) || bw=""
+  bw=/usr/bin/bwrap; [ -x "$bw" ] || bw=""
   # The test suite simulates a machine without a sandbox tool (honored only in test mode).
   if [ "${GA_TEST_MODE:-}" = 1 ] && [ -n "${GA_TEST_SANDBOX_EXEC:-}" ]; then sbx=$GA_TEST_SANDBOX_EXEC; bw=""; fi
+  if [ ! -x "$sbx" ] && [ -z "$bw" ]; then
+    echo "격리 실행 도구 없음 (macOS sandbox-exec 나 Linux bwrap 이 필요합니다)" >&2
+    exit 125
+  fi
+
+  # The writable folders: the project, a temp folder made for this run, the user's allowWrite folders.
+  rt=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/ga-build.XXXXXX") && rt=$(phys_dir "$rt") ||
+    die "enforce: 빌드 확인용 임시 폴더를 만들 수 없습니다" 2
+  trap 'rm -rf "$rt"' EXIT
+  trap 'exit 143' TERM INT HUP
+  allow=("$ROOT" "$rt")
+  while IFS= read -r p; do [ -n "$p" ] && allow+=("$p"); done <<EOF
+$(allow_write_paths)
+EOF
+
+  rc=0
   if [ -x "$sbx" ]; then
-    # Seatbelt judges paths, so every parent folder of a protected path is protected from renames
-    # too (writing files inside those folders stays allowed).
-    prof="(version 1)(allow default)(deny file-write*"
+    # Seatbelt: the later rule wins. Writes are denied, then allowed in the writable folders (and the
+    # devices a command needs), then denied again for the protected paths. Every parent folder of a
+    # protected path is denied as itself, so it cannot be renamed away (files inside stay writable).
+    prof="(version 1)(allow default)(deny file-write*)(allow file-write*"
+    for p in "${allow[@]}"; do prof="$prof (subpath $(sb_str "$p"))"; done
+    prof="$prof (literal \"/dev/null\") (literal \"/dev/zero\") (literal \"/dev/tty\") (literal \"/dev/stdout\")"
+    prof="$prof (literal \"/dev/stderr\") (literal \"/dev/dtracehelper\") (literal \"/dev/random\") (literal \"/dev/urandom\")"
+    prof="$prof (literal \"/dev/ptmx\") (subpath \"/dev/fd\") (regex #\"^/dev/ttys[0-9]+\$\"))(deny file-write*"
     for p in "${prot[@]}"; do
       prof="$prof (subpath $(sb_str "$p"))"
       a=${p%/*}
@@ -316,15 +407,17 @@ do_exec() { # [--protect PATH]... -- CMD...
       done
     done
     prof="$prof)"
-    exec "$sbx" -p "$prof" "$@"
-  elif [ -n "$bw" ]; then
-    # Bind mounts follow the folder, so a renamed parent keeps them read-only.
-    bw_args=(--dev-bind / /)
+    env TMPDIR="$rt" TMP="$rt" TEMP="$rt" PATH="$GA_USER_PATH" "$sbx" -p "$prof" "$@" || rc=$?
+  else
+    # bwrap (Linux, untested here): the whole tree read-only, the writable folders bound writable on
+    # top, then the protected paths read-only again. Bind mounts follow the folder, so a renamed
+    # parent keeps them read-only.
+    bw_args=(--ro-bind / / --dev /dev --proc /proc)
+    for p in "${allow[@]}"; do bw_args+=(--bind "$p" "$p"); done
     for p in "${prot[@]}"; do bw_args+=(--ro-bind-try "$p" "$p"); done
-    exec "$bw" "${bw_args[@]}" -- "$@"
+    env TMPDIR="$rt" TMP="$rt" TEMP="$rt" PATH="$GA_USER_PATH" "$bw" "${bw_args[@]}" -- "$@" || rc=$?
   fi
-  echo "격리 실행 도구 없음 (macOS sandbox-exec 나 Linux bwrap 이 필요합니다)" >&2
-  exit 125
+  exit "$rc"
 }
 
 case "$cmd" in

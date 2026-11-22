@@ -175,3 +175,24 @@ test_p16_build_check_skipped_without_isolation() { local r out
   assert_eq "격리 실행 도구 없음" "$(rep "$r" '.build_check.skipped')"; [ ! -e "$r/built.txt" ] || _fail "build ran without isolation"
   assert_contains "$(argval "$FAKE_ARGV_DUMP" -p)" "격리 실행 도구 없음"
   out=$(uc "$r" 'GA 승인 뼈대'); assert_eq block "$(jq -r .decision <<<"$out")"; assert_contains "$out" "격리"; }
+
+# --- second fix wave (P27, P28) ---
+# P27: the build runs with the user's PATH and a temp folder of its own (removed afterwards), and it
+# cannot plant a program in a PATH folder of the home directory.
+test_p27_build_gets_user_path_and_its_own_temp() { local r d t
+  [ -x /usr/bin/sandbox-exec ] || command -v bwrap >/dev/null 2>&1 || return 0
+  use_fake_claude; r=$(c1_skel); d=$(mktemp -d); mkdir -p "$HOME/.local/bin"
+  printf '#!/bin/sh\necho mytool-ran\n' >"$d/mytool"; chmod +x "$d/mytool"
+  printf '%s\n' 'mytool >tool.txt' 'echo "$TMPDIR" >tmp.txt' 'echo x >"$TMPDIR/scratch"' 'echo x >"$HOME/.local/bin/planted" 2>/dev/null || true' 'exit 0' >"$r/test.sh"
+  PATH="$d:$PATH" GA_HARNESS=claude-code ga --root "$r" verify >/dev/null
+  assert_eq mytool-ran "$(cat "$r/tool.txt")"; assert_eq 0 "$(rep "$r" '.build_check.exit')"
+  [ ! -e "$HOME/.local/bin/planted" ] || _fail "the build planted a program in a PATH folder of the home directory"
+  t=$(cat "$r/tmp.txt"); [ -n "$t" ] || _fail "no TMPDIR in the build"
+  [ "$t" != "${TMPDIR:-/tmp}" ] && [ ! -e "$t" ] || _fail "the build used the user's TMPDIR or its temp folder was left: $t"; }
+# P28: ga verify runs only system tools outside the sandbox (the runner and its preflight come from the
+# user's PATH, and the report names the runner that ran).
+test_p28_verify_runs_only_system_tools() { local r d m
+  use_fake_claude; r=$(c1_skel); printf 'exit 0\n' >"$r/test.sh"; d=$(mktemp -d); m=$HOME/tools-ran; fake_tools "$d" "$m"
+  (PATH="$d:$PATH" GA_HARNESS=claude-code "$CORE/bin/ga" --root "$r" verify) >/dev/null 2>&1 || true
+  [ ! -e "$m" ] || _fail "ga verify ran tools from the user's PATH: $(sort -u "$m" | tr '\n' ' ')"
+  assert_eq "$REPO/tests/fakes/claude" "$(rep "$r" '.panel[0].command_path')"; }

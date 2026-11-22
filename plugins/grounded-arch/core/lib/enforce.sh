@@ -8,11 +8,15 @@
 #   status ROOT              prints {"active":bool,"reason":"...","settings":"...","warnings":[...]}
 #                            (the first bytes are exactly {"active":true, or {"active":false,)
 #   protects ROOT PATH       exit 0: a settings file with the isolation settings; 3: a file the
-#                            harness runs outside the sandbox; 1: neither
+#                            harness runs outside the sandbox (protected while a design exists); 1:
+#                            neither
 #   protects ROOT --list     the same for paths on stdin: prints "0 PATH" / "3 PATH" lines
 #   exec ROOT [--protect P]... -- CMD...
-#                            runs CMD in an OS sandbox where the state folder, P, the settings files
-#                            and the plugin folder are read-only; no sandbox tool: exit 125 and
+#                            runs CMD in an OS sandbox that denies writes by default (P27): CMD may
+#                            write ROOT, a fresh temp folder (its TMPDIR, TMP, TEMP; removed after) and
+#                            the harness's user-granted write folders, but never the git folder, the
+#                            harness's own folders, the state folder, P or the plugin folder; CMD gets
+#                            the user's PATH (GA_USER_PATH). No sandbox tool: exit 125 and
 #                            "격리 실행 도구 없음" on stderr
 
 GA_ENFORCE_RECORD=enforce.json
@@ -86,8 +90,8 @@ ga_enforce_settings_rel() { # ROOT
     done
 }
 
-# P16: runs CMD... inside the adapter's OS sandbox (state folder, fingerprint store, settings files,
-# plugin folder read-only). rc 125 with "격리 실행 도구 없음" when there is no harness or no tool.
+# P16/P27: runs CMD... inside the adapter's OS sandbox (writes denied by default; see the contract
+# above). rc 125 with "격리 실행 도구 없음" when there is no harness or no tool.
 ga_enforce_exec() { # ROOT CMD...
   local s root=$1
   shift
