@@ -3,11 +3,6 @@
 
 _ga_viol() { echo "$1" >&2; return 3; } # MSG -> returns 3
 
-_ga_need_root() {
-  [ -n "${GA_ROOT:-}" ] && [ -f "$(ga_state_dir "$GA_ROOT")/state.json" ] ||
-    ga_die "ga: 초기화된 프로젝트가 없습니다 (ga init 먼저)" 2
-}
-
 # Runs ga check --item KIND on JSON ITEM; prints checker lines to stderr; returns 0 / 3 / 2.
 _ga_check_item() { # ROOT KIND ITEM
   local root=$1 kind=$2 out rc
@@ -67,7 +62,7 @@ _ga_add_locked() { # ROOT KIND INPUT_JSON -> prints id
 cmd_add() {
   local kind in id rc
   [ $# -eq 1 ] || ga_die "사용법: ga add KIND  (stdin: JSON 객체)" 2
-  _ga_need_root
+  ga_need_state
   kind=$1
   in=$(_ga_stdin_object) || exit 3
   ga_lock "$GA_ROOT"
@@ -105,7 +100,7 @@ _ga_update_locked() { # ROOT ID PATCH
 cmd_update() {
   local id patch bad rc how
   [ $# -eq 1 ] || ga_die "사용법: ga update ID  (stdin: JSON 객체)" 2
-  _ga_need_root
+  ga_need_state
   id=$1
   patch=$(_ga_stdin_object) || exit 3
   bad=$(printf '%s' "$patch" | jq -r '[keys[] | select(. as $k | ["id","kind","status","resolution","resolution_history","round","phase_added","answer","deviation"] | index($k))] | join(", ")')
@@ -146,7 +141,7 @@ _ga_ask_locked() { # ROOT ID
 cmd_ask() {
   local rc
   [ $# -eq 1 ] || ga_die "사용법: ga ask Q-ID" 2
-  _ga_need_root
+  ga_need_state
   ga_lock "$GA_ROOT"
   _ga_ask_locked "$GA_ROOT" "$1"
   rc=$?
@@ -205,7 +200,7 @@ cmd_resolve() {
     esac
   done
   [ -n "$id" ] || ga_die "사용법: ga resolve ID --source-type code|literature|measurement --ref REF" 2
-  _ga_need_root
+  ga_need_state
   case "$st" in
     user) _ga_viol "사용자 확인은 사용자의 GA 명령으로만 기록됩니다"; exit 3 ;;
     code|literature|measurement) ;;
@@ -322,7 +317,7 @@ _ga_replace_block() { # FILE NAME BODY
 cmd_render() {
   local f lp name body rd rc=0 probs
   [ $# -eq 0 ] || ga_die "사용법: ga render" 2
-  _ga_need_root
+  ga_need_state
   f=$GA_ROOT/docs/architecture/architecture.md
   [ -f "$f" ] || cp "$GA_CORE/templates/architecture.md" "$f" || ga_die "ga: architecture.md를 만들 수 없습니다" 2
   probs=$(ga_marker_problems "$f")

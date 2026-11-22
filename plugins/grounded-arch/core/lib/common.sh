@@ -24,6 +24,13 @@ ga_find_root() { # START
   done
 }
 
+# Every command that needs an initialized design calls this first: GA_ROOT must hold
+# docs/architecture/.state/state.json, else exit 2 with the one message the skill branches on.
+ga_need_state() {
+  [ -n "${GA_ROOT:-}" ] && [ -f "$GA_ROOT/docs/architecture/.state/state.json" ] ||
+    ga_die "ga: 초기화된 프로젝트가 없습니다 (ga init 먼저)" 2
+}
+
 # True when the user's pause marker (GA 일시정지) exists. It works even when state.json is unreadable.
 ga_paused_marker() { [ -e "$1/docs/architecture/.state/PAUSED" ]; } # ROOT
 

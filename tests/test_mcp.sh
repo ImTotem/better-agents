@@ -172,19 +172,60 @@ test_mcp_discover_falls_back_to_initialize() {
   assert_eq 2025-11-25 "$(resp "$out" 0 | jq -r .result.protocolVersion)"
 }
 
+rootarg() { jq -nc --arg r "$1" '{root:$r}'; } # PATH -> {"root":PATH}
+
+# Without CLAUDE_PROJECT_DIR (other harnesses) the root argument is required and used as given.
 test_mcp_root_argument_and_missing_root() {
   local a b out
-  a=$(mk_project); b=$(mk_project); export CLAUDE_PROJECT_DIR=$a
-  out=$(mcp "$(mcall 1 ga_init "$(jq -nc --arg r "$b" '{root:$r}')")")
+  unset CLAUDE_PROJECT_DIR
+  b=$(mk_project)
+  out=$(mcp "$(mcall 1 ga_init "$(rootarg "$b")")")
   assert_eq false "$(iserr "$out" 1)"
   [ -f "$b/docs/architecture/.state/state.json" ] || _fail "root argument ignored"
-  [ ! -e "$a/docs/architecture" ] || _fail "CLAUDE_PROJECT_DIR used although root was given"
-  out=$(mcp "$(mcall 2 ga_status '{"root":"relative/dir"}')" "$(mcall 3 ga_status "$(jq -nc --arg r "$a/missing" '{root:$r}')")")
+  out=$(mcp "$(mcall 2 ga_status '{"root":"relative/dir"}')" "$(mcall 3 ga_status "$(rootarg "$b/missing")")" "$(mcall 4 ga_status '{}')")
   assert_eq true "$(iserr "$out" 2)"; assert_contains "$(text "$out" 2)" "절대 경로"
   assert_eq true "$(iserr "$out" 3)"
-  unset CLAUDE_PROJECT_DIR
-  out=$(mcp "$(mcall 4 ga_status '{}')")
   assert_eq true "$(iserr "$out" 4)"; assert_contains "$(text "$out" 4)" "CLAUDE_PROJECT_DIR"
+}
+
+# P10: with CLAUDE_PROJECT_DIR the root is the design found walking up from it (else that dir);
+# a root argument must canonicalize to that same path.
+test_mcp_root_argument_must_match_session_root() {
+  local a b out
+  a=$(mk_project); b=$(mk_project); export CLAUDE_PROJECT_DIR=$a
+  ln -s "$a" "$b/alias"
+  out=$(mcp "$(mcall 1 ga_init "$(rootarg "$b")")" "$(mcall 2 ga_status "$(rootarg "$b/alias")")" \
+            "$(mcall 3 ga_init "$(rootarg "$b/alias/.")")" "$(mcall 4 ga_status "$(rootarg "$a")")" "$(mcall 5 ga_status '{"root":"relative/dir"}')")
+  assert_eq true "$(iserr "$out" 1)"; assert_contains "$(text "$out" 1)" "root"
+  [ ! -e "$b/docs" ] || _fail "a root other than the session's was used"
+  assert_eq true "$(iserr "$out" 2)"; assert_contains "$(text "$out" 2)" "초기화된 프로젝트가 없습니다" # same path, no design yet
+  assert_eq false "$(iserr "$out" 3)"; [ -f "$a/docs/architecture/.state/state.json" ] || _fail "alias of the session root refused"
+  assert_eq false "$(iserr "$out" 4)"
+  assert_eq true "$(iserr "$out" 5)"; assert_contains "$(text "$out" 5)" "절대 경로"
+}
+
+test_mcp_subfolder_session_uses_design_above() {
+  local r out
+  r=$(mk_project); ga --root "$r" init >/dev/null; mkdir -p "$r/sub/deeper"
+  export CLAUDE_PROJECT_DIR=$r/sub/deeper
+  out=$(mcp "$(mcall 1 ga_add "$(add_args assumption "$FIX/asm.json")")" "$(mcall 2 ga_status '{}')" \
+            "$(mcall 3 ga_status "$(rootarg "$r")")" "$(mcall 4 ga_status "$(rootarg "$r/sub/deeper")")")
+  assert_eq ASM-1 "$(text "$out" 1)"; assert_eq 1 "$(ledger "$r" '.items | length')"
+  assert_contains "$(text "$out" 2)" "open=1"
+  assert_eq false "$(iserr "$out" 3)" # the design's root is the session root
+  assert_eq true "$(iserr "$out" 4)"  # the subfolder is not
+  [ ! -e "$r/sub/deeper/docs" ] || _fail "the subfolder got design files"
+}
+
+test_mcp_status_and_verify_before_init() {
+  local r out i
+  r=$(mk_project); export CLAUDE_PROJECT_DIR=$r
+  out=$(mcp "$(mcall 1 ga_status '{}')" "$(mcall 2 ga_status '{"json":true}')" "$(mcall 3 ga_verify '{}')")
+  for i in 1 2 3; do
+    assert_eq true "$(iserr "$out" $i)"
+    assert_contains "$(text "$out" $i)" "초기화된 프로젝트가 없습니다 (ga init 먼저)"
+    assert_not_contains "$(text "$out" $i)" "jq:"
+  done
 }
 
 test_mcp_arguments_are_not_shell_text() {

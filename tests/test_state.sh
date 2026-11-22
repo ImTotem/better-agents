@@ -45,3 +45,27 @@ test_r35_fresh_lock_timeout_explains_recovery() { local r err; r=$(mk_project); 
   mkdir "$r/docs/architecture/.state/.lock"
   err=$(ga --root "$r" add assumption <"$FIX/asm.json" 2>&1 >/dev/null) || true
   assert_contains "$err" "docs/architecture/.state/.lock"; assert_contains "$err" "지우"; }
+
+# MCP fix round 1: every design command with --root but no design says "ga init 먼저".
+test_commands_before_init_say_ga_init() { local r c out rc
+  r=$(mk_project)
+  for c in "status" "status --json" "verify" "check" "check --json" "dispute FND-1 --evidence x" "effect check" "render" "ask Q-1"; do
+    rc=0; out=$(ga --root "$r" $c 2>&1) || rc=$?
+    assert_eq "2 $c" "$rc $c"
+    assert_contains "$out" "초기화된 프로젝트가 없습니다 (ga init 먼저)"
+    assert_not_contains "$out" "jq:"
+  done
+  [ ! -e "$r/docs" ] || _fail "a command before init created files"; }
+# P11: ga init refuses a symlinked docs, docs/architecture or docs/architecture/.state.
+test_init_refuses_symlinked_design_dirs() { local r t p out rc
+  for p in docs docs/architecture docs/architecture/.state; do
+    r=$(mk_project); t=$(mktemp -d)
+    mkdir -p "$r/$(dirname "$p")"; ln -s "$t" "$r/$p"
+    rc=0; out=$(ga --root "$r" init 2>&1) || rc=$?
+    assert_eq "3 $p" "$rc $p"; assert_contains "$out" "심볼릭 링크"
+    assert_eq "" "$(ls -A "$t")"
+  done
+  # a symlinked .state pointing at another design is refused too, not reported as "already initialized"
+  r=$(mk_project); t=$(mk_project); ga --root "$t" init >/dev/null
+  mkdir -p "$r/docs/architecture"; ln -s "$t/docs/architecture/.state" "$r/docs/architecture/.state"
+  assert_status 3 ga --root "$r" init; }

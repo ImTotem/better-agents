@@ -72,6 +72,7 @@ cmd_check() {
       *) ga_die "사용법: ga check [--json] [--item KIND]" 2 ;;
     esac
   done
+  [ -n "$kind" ] || ga_need_state # --item checks one item and needs no design
   tmp=$(mktemp) || ga_die "ga: 임시 파일을 만들 수 없습니다" 2
   if [ -n "$kind" ]; then
     root=${GA_ROOT:-$PWD}
@@ -80,7 +81,6 @@ cmd_check() {
     fi
     res=$(_ga_check_run "$tmp" 0 "$root") || { rm -f "$tmp"; ga_die "ga: 검사 실패" 2; }
   else
-    [ -n "${GA_ROOT:-}" ] || { rm -f "$tmp"; ga_die "ga: 초기화된 프로젝트가 없습니다 (ga init 먼저)" 2; }
     if ! jq -e '.items | type == "array"' "$(ga_ledger_path "$GA_ROOT")" >/dev/null 2>&1; then
       rm -f "$tmp"; ga_die "ga: 원장을 읽을 수 없습니다: $(ga_ledger_path "$GA_ROOT")" 2
     fi

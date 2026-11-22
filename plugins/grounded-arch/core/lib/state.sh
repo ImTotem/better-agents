@@ -51,6 +51,14 @@ cmd_init() {
   [ -n "${GA_ROOT_EXPLICIT:-}" ] && root=${GA_ROOT:-}
   [ -n "$root" ] || root=$(ga_canon "$PWD") || exit 2
   sd=$(ga_state_dir "$root")
+  # P11: the design's folders must be real directories under ROOT, never links elsewhere.
+  local p
+  for p in docs docs/architecture docs/architecture/.state; do
+    if [ -L "$root/$p" ]; then
+      echo "ga: ${root}/${p} 이(가) 심볼릭 링크라서 설계를 시작할 수 없습니다. 실제 디렉터리로 바꾸거나 링크를 지운 뒤 다시 실행하세요" >&2
+      exit 3
+    fi
+  done
   if [ -f "$sd/state.json" ]; then
     echo "ga: 이미 초기화되어 있습니다: $sd/state.json" >&2
     exit 1
@@ -131,7 +139,7 @@ cmd_status() {
   for a in "$@"; do
     case "$a" in --json) json=1 ;; *) ga_die "사용법: ga status [--json]" 2 ;; esac
   done
-  [ -n "${GA_ROOT:-}" ] || ga_die "ga: 초기화된 프로젝트가 없습니다 (ga init 먼저)" 2
+  ga_need_state
   if [ "$json" = 1 ]; then
     _ga_status_json "$GA_ROOT"
   else

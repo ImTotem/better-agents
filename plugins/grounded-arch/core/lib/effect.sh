@@ -151,7 +151,7 @@ ga_effect_check() { # ROOT
 cmd_effect() {
   local out rc
   { [ $# -eq 1 ] && [ "$1" = check ]; } || ga_die "사용법: ga effect check" 2
-  [ -n "${GA_ROOT:-}" ] || ga_die "ga: 초기화된 프로젝트가 없습니다 (ga init 먼저)" 2
+  ga_need_state
   out=$(ga_effect_check "$GA_ROOT")
   rc=$?
   [ -n "$out" ] && printf '%s\n' "$out"

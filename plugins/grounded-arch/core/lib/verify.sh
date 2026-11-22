@@ -118,7 +118,7 @@ cmd_verify() {
   local root=${GA_ROOT:-} sd panel_file panel timeout n i m runner model rec tmp mdir
   local mode phase hash prompt build_json="null" build_text="없음" status kept dropped
   [ $# -eq 0 ] || ga_die "사용법: ga verify" 2
-  [ -n "$root" ] || ga_die "ga: 초기화된 프로젝트가 없습니다 (ga init 먼저)" 2
+  ga_need_state
   sd=$(ga_state_dir "$root")
   panel_file=$sd/panel.json
   [ -f "$panel_file" ] || panel_file=$GA_VERIFY_DIR/verifier/panel.json
@@ -280,7 +280,7 @@ ga_finding_verdict() { # ROOT FND accept|reject QUOTE
 
 cmd_dispute() {
   local fnd="" ev="" have=0
-  [ -n "${GA_ROOT:-}" ] || ga_die "ga: 초기화된 프로젝트가 없습니다 (ga init 먼저)" 2
+  ga_need_state
   while [ $# -gt 0 ]; do
     case "$1" in
       --evidence) [ $# -ge 2 ] || ga_die "사용법: ga dispute FND-ID --evidence TEXT" 2; ev=$2; have=1; shift 2 ;;

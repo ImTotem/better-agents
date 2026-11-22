@@ -14,6 +14,8 @@
 
 GA_MCP_CORE=$(cd -P "$(dirname "$0")/.." && pwd) || exit 2
 GA_MCP_GA=$GA_MCP_CORE/bin/ga
+# ga_find_root, ga_canon and GA_VERSION: the root rules must be ga's own.
+. "$GA_MCP_CORE/lib/common.sh" || { echo "ga-mcp: core/lib/common.sh를 읽을 수 없습니다" >&2; exit 2; }
 GA_MCP_VERSIONS="2025-11-25 2025-06-18 2025-03-26 2024-11-05" # newest first
 GA_MCP_TICK=60 # seconds between progress notifications while a tool runs
 if [ "${GA_TEST_MODE:-}" = 1 ]; then
@@ -33,7 +35,6 @@ GA_MCP_OUT=$GA_MCP_TMP/out.txt    # ga's stdout + stderr
 GA_MCP_TOOLS=$GA_MCP_TMP/tools.json
 GA_MCP_CHILD=""
 GA_MCP_TICKER=""
-GA_MCP_VER=""
 
 # Freezes PID before listing its children, so nothing in the tree can fork or react while the
 # tree is taken down; each process gets TERM (delivered on CONT).
@@ -152,6 +153,36 @@ _mcp_get() { # KEY -> GA_MCP_V: string argument KEY, exactly ("" when absent)
 _mcp_flag() { [ "$(jq -r --arg k "$1" '.[$k] == true' "$GA_MCP_ARGS")" = true ]; } # KEY
 _mcp_payload() { jq -c --arg k "$1" '.[$k]' "$GA_MCP_ARGS" >"$GA_MCP_IN"; }   # KEY -> GA_MCP_IN
 
+# The project root for this call -> GA_MCP_ROOT, or returns 1 with a Korean GA_MCP_ERR.
+# P10: with CLAUDE_PROJECT_DIR (Claude Code) the root is the design found walking up from it, like
+# the hooks find it, else that directory; a root argument must canonicalize to that same path.
+# Without it (other harnesses) the root argument is required and used as given.
+_mcp_root() {
+  local arg base
+  GA_MCP_ROOT=""
+  _mcp_get root; arg=$GA_MCP_V
+  case "$arg" in "" | /*) ;; *) GA_MCP_ERR="root는 절대 경로여야 합니다: ${arg}"; return 1 ;; esac
+  if [ -n "${CLAUDE_PROJECT_DIR:-}" ]; then
+    case "$CLAUDE_PROJECT_DIR" in
+      /*) ;;
+      *) GA_MCP_ERR="CLAUDE_PROJECT_DIR가 절대 경로가 아닙니다: ${CLAUDE_PROJECT_DIR}"; return 1 ;;
+    esac
+    base=$(ga_find_root "$CLAUDE_PROJECT_DIR") || base=$(ga_canon "$CLAUDE_PROJECT_DIR") || base=""
+    [ -n "$base" ] || { GA_MCP_ERR="CLAUDE_PROJECT_DIR를 해석할 수 없습니다: ${CLAUDE_PROJECT_DIR}"; return 1; }
+    if [ -n "$arg" ] && [ "$(ga_canon "$arg")" != "$base" ]; then
+      GA_MCP_ERR="root 인자는 이 세션의 프로젝트 루트와 같아야 합니다 (세션 루트: ${base}, 받은 root: ${arg}). root를 빼고 다시 호출하세요"
+      return 1
+    fi
+    GA_MCP_ROOT=$base
+  elif [ -n "$arg" ]; then
+    GA_MCP_ROOT=$arg
+  else
+    GA_MCP_ERR="프로젝트 루트를 알 수 없습니다. 인자 root에 절대 경로를 주거나, CLAUDE_PROJECT_DIR가 설정된 환경(Claude Code)에서 서버를 실행하세요"
+    return 1
+  fi
+  [ -d "$GA_MCP_ROOT" ] || { GA_MCP_ERR="root 디렉터리가 없습니다: ${GA_MCP_ROOT}"; return 1; }
+}
+
 # ---- running ga ----
 # Background subshell: one progress notification every GA_MCP_TICK seconds until killed.
 _mcp_ticker() { # TOKEN_JSON
@@ -195,9 +226,7 @@ _mcp_initialize() { # ID_JSON
   # Version negotiation (2025-11-25 lifecycle): the requested version if supported, else our latest.
   want=$(jq -r '.params.protocolVersion | strings' "$GA_MCP_MSG" 2>/dev/null)
   for s in $GA_MCP_VERSIONS; do [ "$want" = "$s" ] && v=$s; done
-  [ -n "$GA_MCP_VER" ] || GA_MCP_VER=$("$GA_MCP_GA" version 2>/dev/null </dev/null | awk '{print $2}')
-  [ -n "$GA_MCP_VER" ] || GA_MCP_VER=unknown
-  _mcp_emit "$1" --arg v "$v" --arg sv "$GA_MCP_VER" --arg ins "$GA_MCP_INSTRUCTIONS" '
+  _mcp_emit "$1" --arg v "$v" --arg sv "${GA_VERSION:-unknown}" --arg ins "$GA_MCP_INSTRUCTIONS" '
     {jsonrpc: "2.0", id: $id, result: {protocolVersion: $v, capabilities: {tools: {}},
       serverInfo: {name: "grounded-arch-ga", version: $sv}, instructions: $ins}}'
 }
@@ -228,14 +257,8 @@ _mcp_tools_call() { # ID_JSON
   if [ -n "$errs" ]; then _mcp_tool_error "$id" "인자 오류:
 $errs"; return 0; fi
 
-  _mcp_get root; root=$GA_MCP_V
-  [ -n "$root" ] || root=${CLAUDE_PROJECT_DIR:-}
-  if [ -z "$root" ]; then
-    _mcp_tool_error "$id" "프로젝트 루트를 알 수 없습니다. 인자 root에 절대 경로를 주거나, CLAUDE_PROJECT_DIR가 설정된 환경(Claude Code)에서 서버를 실행하세요"
-    return 0
-  fi
-  case "$root" in /*) ;; *) _mcp_tool_error "$id" "root는 절대 경로여야 합니다: ${root}"; return 0 ;; esac
-  [ -d "$root" ] || { _mcp_tool_error "$id" "root 디렉터리가 없습니다: ${root}"; return 0; }
+  _mcp_root || { _mcp_tool_error "$id" "$GA_MCP_ERR"; return 0; }
+  root=$GA_MCP_ROOT
 
   # Tool -> ga argv. Argument values are passed as separate words, never through a shell.
   set --
