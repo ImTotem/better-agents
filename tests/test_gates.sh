@@ -390,3 +390,101 @@ test_b_regression_guard_allowed() { local r w c
   for c in 'cd build && rm -f *.o' 'cd src && make' 'rm -f *.o' 'cp "$src" "$dst"'; do bx "$r" allow "$c"; done
   r=$(phase iterating); mkdir -p "$r/.git"; w=$r/.claude/worktrees/w; mkdir -p "$w/sub"; echo 'gitdir: ../../../.git/worktrees/w' >"$w/.git"
   for c in 'rm -rf build' 'echo x > src/a.c' 'cd sub && echo x > a.txt' 'cd "$D" && rm -f out.txt'; do bx "$w" allow "$c"; done; }
+
+# --- remaining fix round 2 ---
+wtree() { # PHASE -> worktree R/.claude/worktrees/w (a .git FILE, no design of its own) of design root R
+  local r w; r=$(phase "$1"); mkdir -p "$r/.git"; w=$r/.claude/worktrees/w; mkdir -p "$w/sub" "$w/build" "$w/src"
+  echo 'gitdir: ../../../.git/worktrees/w' >"$w/.git"; echo "$w"; }
+nodesign() { local d; d=$(mktemp -d); mkdir -p "$d/.git" "$d/src"; echo "$d"; } # a checkout without any design
+# R2#1: with no design reachable, only real invocations of ga user-command / ga gate are internal calls.
+test_r2_internal_mentions_allowed_without_design() { local d c
+  d=$(nodesign)
+  for c in 'git add plugins/grounded-arch/adapters/claude-code/hook.sh' 'cat plugins/grounded-arch/adapters/claude-code/hook.sh' \
+           'cat scripts/adapters/github/hook.sh' 'git commit -m "fix ga gate output"' 'grep -rn "user-command" plugins' \
+           'grep -rn "ga user-command" plugins' 'echo "see adapters/x/hook.sh" > notes.txt' "git commit -m 'refactor ga hook handling'"; do
+    bx "$d" allow "$c"; done; }
+test_r2_internal_invocations_denied_without_design() { local d c
+  d=$(nodesign)
+  for c in 'ga user-command --text-file /tmp/f' 'ga --root ../x user-command --text-file /tmp/f' 'ga --root "$X" user-command --text-file /tmp/f' \
+           'env ga gate bash --command x' "bash -c 'ga user-command --text-file f'" 'echo f | xargs ga user-command --text-file' \
+           '/opt/p/core/bin/ga gate stop' 'command ga gate stop' 'exec ga user-command --text-file f' 'nohup ga user-command --text-file f' \
+           'time ga gate stop' 'X=1 ga gate stop' 'sh -c "ga gate stop"' "eval 'ga user-command --text-file f'" 'ga --root=x gate stop'; do
+    bx "$d" deny "$c"; done; }
+test_r2_internal_text_with_design() { local r o
+  r=$(phase implement)
+  bx "$r" allow 'git commit -m "fix ga gate output"'; bx "$r" allow "cat $PLUGIN/adapters/claude-code/hook.sh"
+  bx "$r" deny 'git commit -m "fix ga user-command parsing"'; bx "$r" deny 'timeout 5 ga user-command --text-file f'
+  # a design reached through --root / cd keeps the text net for wrappers the parser does not know
+  o=$(outer implement)
+  bx "$o" deny 'timeout 5 ga --root proj user-command --text-file f'; bx "$o" deny 'cd proj && timeout 5 ga user-command --text-file f'
+  bx "$o" allow 'git commit -m "fix ga user-command parsing"'; }
+# R2#3: running a file named hook.sh is an internal call from any cwd; mentions are not.
+test_r2_relative_hook_sh_denied_everywhere() { local r d a c dir
+  a=$PLUGIN/adapters
+  r=$(phase implement); d=$(nodesign)
+  for dir in "$r" "$d" "$HOME"; do
+    for c in "cd $a/claude-code && bash hook.sh user-prompt < /tmp/f" "cd $a && sh claude-code/hook.sh user-prompt < /tmp/f" \
+             "cd $a/claude-code && ./hook.sh user-prompt" "cd $a/claude-code && source hook.sh user-prompt" "cd $a/claude-code && . ./hook.sh user-prompt" \
+             'env bash hook.sh user-prompt' 'echo x | xargs bash hook.sh' 'exec ./hook.sh stop' 'command bash hook.sh stop' 'bash -c "bash hook.sh user-prompt"' \
+             "eval './hook.sh user-prompt'" 'zsh hook.sh stop' 'dash hook.sh stop' 'bash -x hook.sh stop' 'bash -- hook.sh stop' 'nohup ./x/hook.sh stop'; do
+      bx "$dir" deny "$c"; done
+    for c in "cat $a/claude-code/hook.sh" "git add $a/claude-code/hook.sh" "grep -n jq $a/claude-code/hook.sh" 'cat hook.sh' 'git add adapters/claude-code/hook.sh'; do
+      bx "$dir" allow "$c"; done
+  done
+  # a symlink to a hook.sh runs it too
+  ln -s "$a/claude-code/hook.sh" "$d/h"; bx "$d" deny 'bash h user-prompt'; bx "$d" deny './h user-prompt'; bx "$d" allow 'cat h'; }
+# R2#4: git clean pathspec operands (.., ../proj, :/, :(top)) reach a sibling design.
+test_r2_git_clean_pathspec_reaches_design() { local o c
+  o=$(outer implement); mkdir -p "$o/web/build"
+  for c in 'git clean -fdx ..' 'git clean -fdx ../proj' 'git clean -fdx :/' 'git clean -fdx ":(top)"' "git clean -fdx ':/proj'" \
+           "git clean -fdx ':(top)proj'" 'git clean -fdx -- ..' 'cd .. && git clean -fdx proj'; do
+    bx "$o/web" deny "$c"; done
+  for c in 'git clean -fdx build/' 'git clean -fdx .' "git clean -fdx -e ../proj build" 'git clean -n build'; do bx "$o/web" allow "$c"; done
+  bx "$o" deny 'git clean -fdx proj'; bx "$o" allow 'git clean -fdx web/'; }
+# R2#5: BASH_ENV / ENV around ga can swap the runner.
+test_r2_bash_env_around_ga_denied() { local r c
+  r=$(phase implement)
+  for c in 'BASH_ENV=/tmp/x ga verify' 'ENV=/tmp/x ga verify' 'export BASH_ENV=/tmp/x; ga verify' 'env BASH_ENV=/tmp/x ga verify'; do bx "$r" deny "$c"; done
+  bx "$r" allow 'NODE_ENV=production npm test'; bx "$r" allow 'BASH_ENV=/tmp/x make'; }
+# R2 Minor: a cd applies to what follows it unless it may not run (subshell, pipe element, background,
+# after ||, &&-then-;, !, a compound command, a prefix like sudo, an unknown or missing directory).
+test_r2_cd_applies_plain_forms() { local w c
+  w=$(wtree iterating)
+  for c in 'cd build && make 2>&1 | tee ../build.log' 'cd build; cp app ../dist/' 'cd sub; rm -f ../x.o' 'cd build && make || cp err.log ../logs/' \
+           'cd sub && git commit -m "fix: handle a|b and (x)" && echo done > ../done.txt' 'cd build
+make > ../build.log'; do
+    bx "$w" allow "$c"; done; }
+test_r2_cd_that_may_not_run_keeps_cwd() { local r v c
+  r=$(nested file implement); v=$r/vendor/lib
+  for c in 'if false; then cd /usr; fi; rm -rf ../../docs' 'while false; do cd /usr; done; rm -rf ../../docs' 'f() { cd /usr; }; rm -rf ../../docs' \
+           'sudo cd /usr; rm -rf ../../docs' 'cd nonexistent-dir-x; rm -rf ../../docs' 'false && cd /usr; rm -rf ../../docs' \
+           'false || cd /usr; rm -rf ../../docs' 'CDPATH=/usr cd lib; rm -rf ../../docs' 'cd .\./.\. && rm -rf docs' 'cd ..\/.. && rm -rf docs' \
+           'true && cd /usr && ls; rm -rf ../../docs'; do
+    bx "$v" deny "$c"; done; }
+# R2 Minor: the B2 fallback matches path components, not substrings; quoted cd/popd words are not cds.
+test_r2_b2_components_and_quoted_cd_words() { local w r
+  w=$(wtree implement)
+  bx "$w" allow 'cd "$BUILD" && echo x > notes.architecture.md'; bx "$w" allow 'cd "$BUILD" && rm -f app.state.json'
+  bx "$w" deny 'cd "$BUILD" && rm -rf x/.state'; bx "$w" deny 'cd "$BUILD" && rm -rf docs/architecture'
+  r=$(phase skeleton brownfield); seed_map "$r" src/new.c new
+  bx "$r" allow 'git commit -m "drop popd from the script" && echo x > src/new.c'; bx "$r" allow 'git commit -m "cd into docs" && echo x > src/new.c'
+  bx "$r" deny 'cd src && echo x > ../src/main.c'; }
+# R2#2: the per-directory classification is bounded: many cds x many relative targets stay fast.
+r2_many() { # sets S2 (8 cds, then 20 relative targets) and S3 (8 lines of "cd ../X; rm -f <20 targets>")
+  local t="" i x; for i in $(seq 1 20); do t="$t f$i"; done
+  S2=$'cd a\ncd ../b\ncd ../c\ncd ../d\ncd ../e\ncd ../f\ncd ../g\ncd ../h\nrm -f'"$t"
+  S3=""; for x in a b c d e f g h; do S3="${S3}cd ../$x; rm -f$t"$'\n'; done; }
+test_r2_gate_latency_bounded() { local r d dir c s e st x
+  r2_many; r=$(phase implement); d=$(nodesign)
+  for dir in "$r" "$d"; do
+    for x in a b c d e f g h; do mkdir -p "$dir/$x"; done
+    for c in "$S2" "$S3"; do
+      st=$(mktemp); s=$(date +%s)
+      assert_eq allow "$(cd "$dir" && GA_GATE_STATS=$st ga gate bash --command "$c" | jq -r .decision)"
+      e=$(date +%s); [ $((e - s)) -lt 5 ] || _fail "gate took $((e - s)) s"
+      # deterministic bound: directory resolutions, design lookups and per-directory classifications
+      grep -q 'classify=' "$st" || _fail "no gate stats"
+      awk '{for (i = 1; i <= NF; i++) {split($i, kv, "="); v[kv[1]] = kv[2]}} END {exit !(v["canon"] <= 60 && v["lookup"] <= 60 && v["classify"] <= 200)}' "$st" \
+        || _fail "gate work not bounded: $(cat "$st")"
+    done
+  done; }
