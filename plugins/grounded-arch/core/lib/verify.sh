@@ -37,8 +37,12 @@ _ga_killtree() { # PID
 
 # Runs CMD... in the background with a watchdog. Sets GA_WATCH_RC and GA_WATCH_TIMEOUT (1/0).
 # ERR: file for stderr, or "&1" to merge into OUT.
+# A member that exits before the timeout is never marked (C1): the watchdog writes the mark only
+# while the member still runs at expiry, and the parent stops the watchdog before its children
+# (frozen so it cannot fork, its children listed, it killed, then they), so it cannot go on to
+# the mark after its sleep is killed and no sleep is left behind.
 _ga_watch() { # SECS OUT ERR CMD...
-  local secs=$1 out=$2 err=$3 pid wd mark
+  local secs=$1 out=$2 err=$3 pid wd mark kids k
   shift 3
   mark=$(mktemp "${TMPDIR:-/tmp}/ga-wd.XXXXXX") || return 2
   rm -f "$mark"
@@ -48,11 +52,14 @@ _ga_watch() { # SECS OUT ERR CMD...
     "$@" >"$out" 2>"$err" </dev/null &
   fi
   pid=$!
-  ( sleep "$secs"; : >"$mark"; _ga_killtree "$pid"; sleep 1; kill -9 "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+  ( sleep "$secs"; kill -0 "$pid" 2>/dev/null || exit 0; : >"$mark"; _ga_killtree "$pid"; sleep 1; kill -9 "$pid" 2>/dev/null ) >/dev/null 2>&1 &
   wd=$!
   GA_WATCH_RC=0
   wait "$pid" 2>/dev/null || GA_WATCH_RC=$?
-  _ga_killtree "$wd"
+  kill -STOP "$wd" 2>/dev/null
+  kids=$(pgrep -P "$wd" 2>/dev/null)
+  kill -KILL "$wd" 2>/dev/null
+  for k in $kids; do _ga_killtree "$k"; done
   wait "$wd" 2>/dev/null
   GA_WATCH_TIMEOUT=0
   if [ -e "$mark" ]; then GA_WATCH_TIMEOUT=1; rm -f "$mark"; fi

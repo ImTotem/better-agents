@@ -121,3 +121,22 @@ test_i3_hash_whole_doc_when_markers_unbalanced() { local r f h1 h2
 test_i9_report_records_runner_command_path() { local r
   use_fake_claude; r=$(vroot); one_member "$r"; ga --root "$r" verify >/dev/null
   assert_eq "$REPO/tests/fakes/claude" "$(rep "$r" '.panel[0].command_path')"; }
+# C (remaining fix): a member that exits before the timeout is never marked timeout, however slowly
+# the watchdog is stopped. _ga_killtree is slowed down between a process's children and the process
+# itself, which is the window where the old watchdog subshell went on to write its timeout mark.
+slow_killtree() { _ga_killtree() { local c; for c in $(pgrep -P "$1" 2>/dev/null); do _ga_killtree "$c"; done; sleep 0.5; kill "$1" 2>/dev/null || true; }; }
+gone() { local i=0; while [ $i -lt 30 ]; do [ -z "$(pgrep -f "$1" 2>/dev/null || true)" ] && return 0; sleep 0.1; i=$((i + 1)); done; return 1; } # PATTERN
+# _ga_watch runs without set -e in ga; the test shell has set -e on.
+watch_nse() { set +e; _ga_watch "$@"; set -e; }
+test_c_watch_fast_member_not_marked_timeout_on_slow_stop() { local d
+  . "$CORE/lib/common.sh"; for x in "$CORE"/lib/*.sh; do . "$x"; done; slow_killtree; d=$(mktemp -d)
+  watch_nse 37.5 "$d/out" "$d/err" true
+  assert_eq 0 "$GA_WATCH_TIMEOUT"; assert_eq 0 "$GA_WATCH_RC"
+  gone '^sleep 37[.]5$' || _fail "watchdog sleep left running"
+  watch_nse 37.5 "$d/out" "$d/err" sh -c 'exit 3'
+  assert_eq 0 "$GA_WATCH_TIMEOUT"; assert_eq 3 "$GA_WATCH_RC"; }
+test_c_watch_real_timeout_still_kills_member() { local d
+  . "$CORE/lib/common.sh"; for x in "$CORE"/lib/*.sh; do . "$x"; done; slow_killtree; d=$(mktemp -d)
+  watch_nse 1 "$d/out" "$d/err" sleep 29.25
+  assert_eq 1 "$GA_WATCH_TIMEOUT"
+  gone '^sleep 29[.]25$' || _fail "timed-out member still running"; }
