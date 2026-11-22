@@ -9,6 +9,12 @@ _ga_fp_sha() { # stdin -> sha256 hex
   if command -v shasum >/dev/null 2>&1; then shasum -a 256 | cut -d' ' -f1; else sha256sum | cut -d' ' -f1; fi
 }
 
+_ga_fp_need_sha() {
+  command -v shasum >/dev/null 2>&1 || command -v sha256sum >/dev/null 2>&1 && return 0
+  echo "ga: shasum 또는 sha256sum 이 필요합니다 (둘 다 PATH 에 없어 상태 지문을 계산할 수 없습니다)" >&2
+  return 1
+}
+
 ga_fp_dir() { echo "${GA_DATA_DIR:-$HOME/.local/state/grounded-arch}"; }
 
 ga_fp_path() { # ROOT -> path of the fingerprint file
@@ -29,17 +35,24 @@ _ga_fp_compute() { # ROOT -> fingerprint hex
 
 ga_fp_record() { # ROOT
   local p fp c tmp
+  _ga_fp_need_sha || return 3
   p=$(ga_fp_path "$1") || return 1
   c=$(ga_canon "$1") || return 1
   fp=$(_ga_fp_compute "$1") || return 1
-  mkdir -p "$(dirname "$p")" || return 1
+  if ! mkdir -p "$(dirname "$p")" 2>/dev/null; then
+    echo "ga: 경고: 상태 지문을 기록하지 못했습니다 ($(dirname "$p") 를 만들 수 없음). GA_DATA_DIR 쓰기 권한을 확인하세요" >&2; return 1
+  fi
   tmp="$p.tmp.$$"
-  jq -nc --arg r "$c" --arg f "$fp" --arg t "$(ga_now)" '{root:$r, fingerprint:$f, ts:$t}' >"$tmp" && mv "$tmp" "$p"
+  if ! { jq -nc --arg r "$c" --arg f "$fp" --arg t "$(ga_now)" '{root:$r, fingerprint:$f, ts:$t}' >"$tmp" && mv "$tmp" "$p"; } 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null
+    echo "ga: 경고: 상태 지문을 기록하지 못했습니다 ($p 에 쓸 수 없음). GA_DATA_DIR 쓰기 권한을 확인하세요" >&2; return 1
+  fi
 }
 
-# rc 0 match, 1 mismatch, 2 nothing recorded (or unreadable record)
+# rc 0 match, 1 mismatch, 2 nothing recorded (or unreadable record), 3 no sha256 tool
 ga_fp_check() { # ROOT
   local p want got
+  _ga_fp_need_sha || return 3
   p=$(ga_fp_path "$1") || return 2
   [ -f "$p" ] || return 2
   want=$(jq -r '.fingerprint // empty' "$p" 2>/dev/null)
@@ -60,7 +73,7 @@ _ga_fp_finish() { # ROOT
   local l
   l=$(ga_state_dir "$1")/.lock
   if [ -e "$l/dirty" ] && { [ -e "$l/force" ] || [ ! -e "$l/premismatch" ]; }; then
-    ga_fp_record "$1" 2>/dev/null
+    ga_fp_record "$1"
   fi
   rm -f "$l/dirty" "$l/force" "$l/premismatch"
   return 0

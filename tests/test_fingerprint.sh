@@ -7,8 +7,8 @@ proj() { local r; r=$(mk_project); ga --root "$r" init >/dev/null; echo "$r"; }
 fpfile() { ( load_ga; ga_fp_path "$1" ); }
 fpcheck() { local rc=0; ( load_ga; ga_fp_check "$1" ) >/dev/null 2>&1 || rc=$?; echo $rc; }
 
-test_fp_recorded_after_ga_write() { r=$(proj); echo '{"statement":"목적"}' | ga --root "$r" add driver --type purpose --priority high >/dev/null 2>&1 || true
-  p=$(fpfile "$r"); [ -f "$p" ] || _fail "no fingerprint file $p"
+test_fp_recorded_after_ga_write() { r=$(proj); p=$(fpfile "$r"); rm -f "$p"; assert_eq 2 "$(fpcheck "$r")"
+  ga --root "$r" add assumption <"$FIX/asm.json" >/dev/null; [ -f "$p" ] || _fail "no fingerprint file $p"
   assert_eq "$(cd -P "$r" && pwd -P)" "$(jq -r .root "$p")"; assert_eq 0 "$(fpcheck "$r")"; }
 test_fp_none_before_any_write_rc2() { r=$(mk_project); mkdir -p "$r/docs/architecture/.state"; echo '{}' >"$r/docs/architecture/.state/state.json"; assert_eq 2 "$(fpcheck "$r")"; }
 test_fp_mismatch_after_direct_edit() { r=$(proj); assert_eq 0 "$(fpcheck "$r")"
@@ -35,7 +35,18 @@ test_fp_excludes_lock_and_temp_files() { r=$(proj); sd=$r/docs/architecture/.sta
 test_fp_new_file_in_state_detected() { r=$(proj); echo x >"$r/docs/architecture/.state/extra"; assert_eq 1 "$(fpcheck "$r")"; }
 test_fp_usercmd_failure_keeps_fingerprint_consistent() { r=$(proj); assert_eq 0 "$(fpcheck "$r")"
   out=$(uc "$r" "GA 일시정지
-GA 아무거나"); assert_eq block "$(dec "$out")"; assert_eq 0 "$(fpcheck "$r")"; }
+GA 아무거나"); assert_eq block "$(dec "$out")"; assert_eq 0 "$(fpcheck "$r")"
+  # a rolled-back 상태승인 must not re-baseline a tampered state
+  set_state "$r" '.round=9'; assert_eq 1 "$(fpcheck "$r")"
+  out=$(uc "$r" "GA 상태승인
+GA 아무거나"); assert_eq block "$(dec "$out")"; assert_eq 1 "$(fpcheck "$r")"; }
 test_fp_usercmd_success_records() { r=$(proj); uc "$r" 'GA 일시정지' >/dev/null; assert_eq 0 "$(fpcheck "$r")"; }
 test_fp_usercmd_does_not_rebaseline_tampering() { r=$(proj); set_state "$r" '.round=9'; uc "$r" 'GA 일시정지' >/dev/null
   assert_eq 1 "$(fpcheck "$r")"; }
+test_fp_missing_sha_tools_fail_closed() { r=$(proj); rc=0; err=$( ( load_ga; PATH=/nonexistent; ga_fp_check "$r" ) 2>&1 ) || rc=$?
+  rc2=0; err2=$( ( load_ga; PATH=/nonexistent; ga_fp_record "$r" ) 2>&1 ) || rc2=$?
+  [ "$rc" = 3 ] || _fail "check rc=$rc"; [ "$rc2" = 3 ] || _fail "record rc=$rc2"; assert_contains "$err" "sha256sum"; assert_contains "$err2" "shasum"; }
+test_fp_reinit_records_fresh_fingerprint() { r=$(proj); ga --root "$r" add assumption <"$FIX/asm.json" >/dev/null; assert_eq 0 "$(fpcheck "$r")"
+  rm -rf "$r/docs/architecture/.state"; ga --root "$r" init >/dev/null; assert_eq 0 "$(fpcheck "$r")"; }
+test_fp_unwritable_data_dir_warns() { r=$(proj); f=$(mktemp); rc=0; err=$( ( export GA_DATA_DIR=$f/sub; load_ga; ga_fp_record "$r" ) 2>&1 ) || rc=$?
+  [ "$rc" = 1 ] || _fail "rc=$rc"; assert_contains "$err" "경고"; assert_contains "$err" "GA_DATA_DIR"; }

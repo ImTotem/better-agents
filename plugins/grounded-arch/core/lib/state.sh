@@ -86,6 +86,7 @@ cmd_init() {
   jq -n --arg m "$mode" '{version:1,mode:$m,phase:"inputs",paused:false,round:1,iteration:0,iteration_count:0,transcript_path:null}' |
     ga_write_json "$sd/state.json"
   ga_effect_snapshot "$root" || { ga_unlock "$root"; ga_die "ga: 파일 변경 기준을 기록하지 못했습니다" 2; }
+  ga_fp_mark "$root" force   # a fresh design always gets a fresh fingerprint, even over an old record
   ga_unlock "$root"
   echo "초기화: mode=$mode (근거: $reason)"
 }
