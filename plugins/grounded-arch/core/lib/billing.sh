@@ -37,18 +37,45 @@ _ga_preflight_path() { # RECFILE
   return 1
 }
 
-# Absolute path of the binary COMMAND resolves to from $PWD (what ga_runner_exec runs).
+# P16: ga verify runs outside the OS sandbox, so a runner command is looked up only in absolute PATH
+# entries outside the project (GA_ROOT): a relative or empty entry, or one inside the project, is
+# agent-writable. Prints the absolute path of the binary COMMAND resolves to (what ga_runner_exec runs).
 ga_runner_command_path() { # COMMAND
-  local p
+  local e d rc oldifs=$IFS noglob=1
   [ -n "$1" ] || return 1
-  p=$(command -v "$1" 2>/dev/null) || return 1
-  case "$p" in
-    /*) ;;
-    */*) p=$PWD/${p#./} ;;
-    *) return 1 ;;
+  rc=""
+  [ -n "${GA_ROOT:-}" ] && rc=$(cd -P "$GA_ROOT" 2>/dev/null && pwd -P)
+  case "$1" in
+    /*) # an absolute command: used as it is, unless it lies inside the project
+      [ -f "$1" ] && [ -x "$1" ] || return 1
+      d=$(cd -P "${1%/*}/" 2>/dev/null && pwd -P) || return 1
+      if [ -n "$rc" ]; then case "$d/" in "$rc"/*) return 1 ;; esac; fi
+      echo "$1"; return 0 ;;
+    */*) return 1 ;; # relative to an agent-writable directory
   esac
-  echo "$p"
+  case $- in *f*) ;; *) noglob=0; set -f ;; esac
+  IFS=:
+  for e in $PATH; do
+    case "$e" in /*) ;; *) continue ;; esac
+    [ -f "$e/$1" ] && [ -x "$e/$1" ] || continue
+    if [ -n "$rc" ]; then
+      d=$(cd -P "$e" 2>/dev/null && pwd -P) || continue
+      case "$d/" in "$rc"/*) continue ;; esac
+      case "${e%/}/" in "${GA_ROOT%/}"/*) continue ;; esac
+    fi
+    IFS=$oldifs; [ "$noglob" = 0 ] && set +f
+    echo "${e%/}/$1"
+    return 0
+  done
+  IFS=$oldifs; [ "$noglob" = 0 ] && set +f
+  return 1
 }
+
+# PATH for a runner or its preflight: absolute entries outside the project only.
+_ga_runner_path() (
+  ga_path_harden "${GA_ROOT:-}" "$( [ -n "${GA_ROOT:-}" ] && cd -P "$GA_ROOT" 2>/dev/null && pwd -P)"
+  printf '%s' "$PATH"
+)
 
 # Sets GA_STRIP_ARGS=(-u NAME ...) from the record's strip_env. Returns 4 when unusable.
 _ga_strip_args() { # RECFILE
@@ -106,7 +133,7 @@ ga_billing_check_rec() { # RUNNER RECFILE
   # The runner-specific preflight runs with the billing environment already stripped.
   errf=$(mktemp "${TMPDIR:-/tmp}/ga-pre.XXXXXX") || { ga_billing_refuse "임시 파일을 만들 수 없습니다"; return 4; }
   rc=0
-  out=$(env "${GA_STRIP_ARGS[@]}" GA_RUNNER_RECORD="$rec" /bin/bash "$script" "$PWD" "${GA_ROOT:-}" </dev/null 2>"$errf") || rc=$?
+  out=$(env "${GA_STRIP_ARGS[@]}" PATH="$(_ga_runner_path)" GA_RUNNER_RECORD="$rec" /bin/bash "$script" "$PWD" "${GA_ROOT:-}" </dev/null 2>"$errf") || rc=$?
   if [ "$rc" -ne 0 ]; then
     [ -n "$out" ] || out=$(head -n 1 "$errf")
     rm -f "$errf"
@@ -181,7 +208,7 @@ EOF
       esac
     done
   done
-  env "${GA_STRIP_ARGS[@]}" GA_IN_RUNNER=1 "$cpath" "$@"
+  env "${GA_STRIP_ARGS[@]}" PATH="$(_ga_runner_path)" GA_IN_RUNNER=1 "$cpath" "$@"
 }
 
 cmd_billing() {

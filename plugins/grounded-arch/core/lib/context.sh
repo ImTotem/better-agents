@@ -68,13 +68,16 @@ _ga_context_session_start() {
 
 # One line: the OS isolation (spec 5.5 G-sandbox) and the state fingerprint (G-effect).
 _ga_context_guard() { # ROOT
-  local st iso fp rc=0 why
+  local st iso fp rc=0 why warn
   if st=$(ga_enforce_status "$1"); then
     iso="격리: 켜짐"
   else
     why=$(printf '%s' "$st" | jq -r '.reason // ""' 2>/dev/null)
     iso="격리: 꺼짐 (${why:-이유를 알 수 없음}. 일시정지가 아니면 셸 명령이 막힙니다. MCP 도구 ga_enforce로 다시 설치하거나 사용자에게 'GA 일시정지'를 요청하세요)"
   fi
+  # P22: the adapter's warnings (e.g. commands that run outside the sandbox).
+  warn=$(printf '%s' "$st" | jq -r '.warnings // [] | .[] | strings' 2>/dev/null)
+  [ -z "$warn" ] || printf '%s\n' "$warn" | while IFS= read -r why; do echo "경고: ${why}"; done
   ga_fp_check "$1" >/dev/null 2>&1 || rc=$?
   case "$rc" in
     0) fp="상태 지문: 일치" ;;

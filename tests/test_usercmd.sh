@@ -137,7 +137,8 @@ test_i6_pause_with_corrupt_state() { local r sd out
   r=$(ready_inputs); sd=$r/docs/architecture/.state; echo '{broken' >"$sd/state.json"
   out=$(uc "$r" 'GA 일시정지'); assert_eq allow "$(dec "$out")"; assert_status 0 test -f "$sd/PAUSED"
   assert_eq '{broken' "$(cat "$sd/state.json")"
-  assert_eq allow "$(dec "$(ga gate write --path "$r/src/a.c")")"
+  # P21: the edit outside ga still locks writes in the design while paused; shell commands run
+  assert_eq deny "$(dec "$(ga gate write --path "$r/src/a.c")")"
   assert_eq allow "$(cd "$r" && dec "$(ga gate bash --command 'rm -rf src')")"
   out=$(uc "$r" 'GA 재개'); assert_eq allow "$(dec "$out")"; assert_status 1 test -e "$sd/PAUSED"; assert_status 1 test -d "$sd/.lock"; }
 test_i6_corrupt_state_other_commands_explain_recovery() { local r out
@@ -178,7 +179,10 @@ GA 승인 입력"); assert_eq allow "$(dec "$out")"; assert_eq iterating "$(sj "
 test_approval_blocked_without_fp_record() { local r out
   r=$(ready_inputs); rm -rf "$HOME/.local/state/grounded-arch"
   out=$(uc "$r" 'GA 승인 입력'); assert_eq block "$(dec "$out")"; assert_contains "$out" "상태 지문"; assert_eq inputs "$(sj "$r" .phase)"
-  assert_eq allow "$(dec "$(uc "$r" 'GA 상태승인')")"; assert_eq allow "$(dec "$(uc "$r" 'GA 승인 입력')")"; }
+  # M7/P17: the adapter always passes --transcript, whose write must not re-create the record
+  out=$(uct "$r" 'GA 승인 입력'); assert_eq block "$(dec "$out")"; assert_contains "$out" "상태 지문"; assert_eq inputs "$(sj "$r" .phase)"
+  assert_eq allow "$(dec "$(uct "$r" 'GA 상태승인')")"; assert_eq allow "$(dec "$(uct "$r" 'GA 승인 입력')")"; }
+uct() { local f; f=$(mktemp); printf '%s' "$2" >"$f"; ga --root "$1" user-command --text-file "$f" --transcript /tmp/transcript.jsonl; } # with transcript, like the adapter
 test_approval_takes_missing_snapshot() { local r out sd
   r=$(ready_inputs); sd=$r/docs/architecture/.state; rm -f "$sd/snapshot.json"; _fp_sync "$r"
   mkdir -p "$r/src"; echo x >"$r/src/old.c" # made before any baseline existed: not judged

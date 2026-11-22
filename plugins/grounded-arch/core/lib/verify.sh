@@ -137,16 +137,23 @@ cmd_verify() {
   hash=$(ga_doc_hash "$root")
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/ga-verify.XXXXXX") || ga_die "ga: 임시 디렉터리를 만들 수 없습니다" 2
 
-  # 2. Build check (brownfield + skeleton only).
+  # 2. Build check (brownfield + skeleton only). It runs project code, and ga verify runs outside the
+  # OS sandbox (an MCP tool), so it runs only inside the adapter's sandbox (P16): state folder,
+  # fingerprint store, settings files and plugin folder read-only. Without one it is not run.
   if [ "$mode" = brownfield ] && [ "$phase" = skeleton ] && [ -f "$sd/test_command" ]; then
     local cmdline bexit btail
     cmdline=$(cat "$sd/test_command")
-    _ga_watch "$timeout" "$tmp/build.out" "&1" bash -c 'cd "$1" && bash -c "$2"' _ "$root" "$cmdline"
-    bexit=$GA_WATCH_RC
-    [ "$GA_WATCH_TIMEOUT" = 1 ] && bexit=124
-    btail=$(tail -n 40 "$tmp/build.out")
-    build_json=$(jq -nc --arg c "$cmdline" --argjson e "$bexit" --arg t "$btail" '{command:$c, exit:$e, tail:$t}')
-    build_text=$(printf '명령: %s\nexit: %s\n출력 마지막 40줄:\n%s' "$cmdline" "$bexit" "$btail")
+    if ga_enforce_exec "$root" /bin/sh -c : >/dev/null 2>&1; then
+      _ga_watch "$timeout" "$tmp/build.out" "&1" ga_enforce_exec "$root" /bin/bash -c 'cd "$1" && PATH=$3 exec /bin/bash -c "$2"' _ "$root" "$cmdline" "${GA_BUILD_PATH:-$PATH}"
+      bexit=$GA_WATCH_RC
+      [ "$GA_WATCH_TIMEOUT" = 1 ] && bexit=124
+      btail=$(tail -n 40 "$tmp/build.out")
+      build_json=$(jq -nc --arg c "$cmdline" --argjson e "$bexit" --arg t "$btail" '{command:$c, exit:$e, tail:$t}')
+      build_text=$(printf '명령: %s\nexit: %s\n출력 마지막 40줄:\n%s' "$cmdline" "$bexit" "$btail")
+    else
+      build_json=$(jq -nc --arg c "$cmdline" '{command:$c, skipped:"격리 실행 도구 없음"}')
+      build_text=$(printf '명령: %s\n건너뜀: 격리 실행 도구 없음 (프로젝트 코드를 OS 격리 밖에서는 실행하지 않으므로 빌드 확인을 하지 않았습니다)' "$cmdline")
+    fi
   fi
 
   # 3. Prompt.
@@ -241,7 +248,11 @@ EOF
   printf '%s' "$panel_out" | jq -r '.[] | "  \(.runner)/\(.model): \(.status) (지적 \(.kept)개 유지, \(.dropped)개 버림, 실행 파일 \(.command_path))"'
   echo "합친 지적: $(printf '%s' "$findings" | jq 'length')개"
   if [ -n "$build_json" ] && [ "$build_json" != null ]; then
-    echo "빌드 확인: exit $(printf '%s' "$build_json" | jq -r .exit)"
+    if [ "$(printf '%s' "$build_json" | jq -r '.skipped // empty')" != "" ]; then
+      echo "빌드 확인: 건너뜀 ($(printf '%s' "$build_json" | jq -r .skipped). 'GA 승인 뼈대'는 빌드 확인 결과가 있어야 합니다)"
+    else
+      echo "빌드 확인: exit $(printf '%s' "$build_json" | jq -r .exit)"
+    fi
   fi
   [ "$all_ok" = 1 ] || { echo "일부 구성원이 정상 종료하지 않았습니다. 다시 실행하거나 패널 설정을 확인하세요." >&2; exit 5; }
   exit 0

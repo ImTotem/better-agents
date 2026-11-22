@@ -28,7 +28,8 @@ test_enforce_install_idempotent() {
   local r s; r=$(phys "$(mk_project)")
   "$ENF" install "$r" >/dev/null; s=$("$ENF" install "$r")
   assert_eq 1 "$(sget "$s" '.sandbox.filesystem.denyWrite | length')"
-  assert_eq 0 "$(ls "$r/.claude" | grep -c tmp || true)"
+  # the temp file is a dotfile (.settings.local.json.XXXXXX): ls -A shows it if one is left behind
+  assert_eq "settings.local.json" "$(ls -A "$r/.claude")"
 }
 
 test_enforce_install_rejects_broken_json() {
@@ -136,8 +137,8 @@ test_ga_enforce_installs_and_rebaselines() {
   ga --root "$r" init >/dev/null 2>&1
   out=$(GA_HARNESS=claude-code ga --root "$r" enforce); assert_contains "$out" "$r/.claude/settings.local.json"
   assert_eq true "$(jq -r .sandbox.enabled "$r/.claude/settings.local.json")"
-  # the file is part of the baseline: the effect check does not flag it
-  assert_not_contains "$(ga --root "$r" effect check 2>&1)" settings.local.json
+  # P19: the harness's settings files are never effect violations
+  assert_eq '[]' "$(GA_HARNESS=claude-code ga --root "$r" effect check 2>/dev/null | jq -c .violations)"
 }
 
 test_ga_enforce_fails_without_harness() {
@@ -164,4 +165,108 @@ test_ga_init_installs_isolation_before_snapshot() {
   GA_HARNESS=claude-code ga --root "$r" init >/dev/null
   assert_eq true "$(jq -r .sandbox.enabled "$r/.claude/settings.local.json")"
   assert_contains "$(jq -c .files "$r/docs/architecture/.state/snapshot.json")" ".claude/settings.local.json"
+}
+
+# --- final fix wave ---
+# T4: precedence across files (managed > local > project > user) and the in-project plugin entry.
+test_enforce_status_precedence_local_over_project_and_user() {
+  local r out; r=$(phys "$(mk_project)"); "$ENF" install "$r" >/dev/null; mkdir -p "$HOME/.claude"
+  echo '{"sandbox":{"enabled":false,"allowUnsandboxedCommands":true}}' >"$r/.claude/settings.json"
+  echo '{"sandbox":{"enabled":false,"allowUnsandboxedCommands":true}}' >"$HOME/.claude/settings.json"
+  out=$(GA_TEST_MANAGED_SETTINGS=/nonexistent "$ENF" status "$r"); assert_eq true "$(jq -r .active <<<"$out")"
+  # a key the local file does not set comes from the project file before the user file
+  jq 'del(.sandbox.allowUnsandboxedCommands)' "$r/.claude/settings.local.json" >"$r/l.x"; mv "$r/l.x" "$r/.claude/settings.local.json"
+  out=$(GA_TEST_MANAGED_SETTINGS=/nonexistent "$ENF" status "$r"); assert_eq false "$(jq -r .active <<<"$out")"
+  echo '{"sandbox":{"allowUnsandboxedCommands":false}}' >"$r/.claude/settings.json"
+  out=$(GA_TEST_MANAGED_SETTINGS=/nonexistent "$ENF" status "$r"); assert_eq true "$(jq -r .active <<<"$out")"
+}
+test_enforce_install_denies_in_project_plugin_folder() {
+  local r s; r=$(phys "$(mk_project)"); mkdir -p "$r/vendor"; cp -R "$PLUGIN" "$r/vendor/ga-plugin"
+  s=$("$r/vendor/ga-plugin/adapters/claude-code/enforce.sh" install "$r")
+  assert_eq "[\"$r/docs/architecture/.state\",\"$r/vendor/ga-plugin\"]" "$(sget "$s" -c .sandbox.filesystem.denyWrite)"
+  s=$("$ENF" install "$(phys "$(mk_project)")"); assert_eq 1 "$(sget "$s" '.sandbox.filesystem.denyWrite | length')"
+}
+# T4: ga init shows at once why the isolation could not be installed.
+test_ga_init_shows_enforce_failure_reason() {
+  local r out; r=$(phys "$(mk_project)"); mkdir -p "$r/.claude"; echo '{bad' >"$r/.claude/settings.local.json"
+  out=$(GA_HARNESS=claude-code ga --root "$r" init 2>&1); assert_contains "$out" "올바른 JSON"
+}
+
+# P22: excludedCommands run outside the sandbox: status stays active but warns.
+test_p22_status_warns_on_excluded_commands() {
+  local r out; r=$(phys "$(mk_project)"); "$ENF" install "$r" >/dev/null; mkdir -p "$HOME/.claude"
+  echo '{"sandbox":{"excludedCommands":["docker *"]}}' >"$r/.claude/settings.json"
+  echo '{"sandbox":{"excludedCommands":["kubectl *"]}}' >"$HOME/.claude/settings.json"
+  out=$(GA_TEST_MANAGED_SETTINGS=/nonexistent "$ENF" status "$r"); assert_eq true "$(jq -r .active <<<"$out")"
+  assert_contains "$(jq -r '.warnings | join(" ")' <<<"$out")" "docker *"; assert_contains "$(jq -r '.warnings | join(" ")' <<<"$out")" "kubectl *"
+  rm -f "$r/.claude/settings.json" "$HOME/.claude/settings.json"
+  out=$(GA_TEST_MANAGED_SETTINGS=/nonexistent "$ENF" status "$r"); assert_eq 0 "$(jq '.warnings | length' <<<"$out")"
+}
+
+# P23: the user can remove the isolation; uninstall removes exactly what install added.
+test_p23_uninstall_restores_previous_settings() {
+  local r s before; r=$(phys "$(mk_project)"); mkdir -p "$r/.claude"; s=$r/.claude/settings.local.json
+  before='{"model":"x","sandbox":{"enabled":false,"network":{"allowedDomains":["a.com"]},"filesystem":{"denyWrite":["/other"]}}}'
+  echo "$before" >"$s"
+  GA_HARNESS=claude-code ga --root "$r" init >/dev/null
+  [ -f "$r/docs/architecture/.state/enforce.json" ] || _fail "no install record"
+  assert_eq true "$(sget "$s" .sandbox.enabled)"
+  GA_HARNESS=claude-code ga --root "$r" enforce >/dev/null # a second install must not forget what the first one set
+  "$ENF" uninstall "$r" >/dev/null
+  assert_eq "$(jq -cS . <<<"$before")" "$(jq -cS . "$s")"
+}
+test_p23_uninstall_removes_created_file_and_exclude_line() {
+  local m w; read -r m w <<<"$(mk_wt)"
+  GA_HARNESS=claude-code ga --root "$w" init >/dev/null
+  [ -f "$m/.claude/settings.local.json" ] || _fail "install did not write the main checkout's file"
+  "$ENF" uninstall "$w" >/dev/null
+  [ ! -e "$m/.claude/settings.local.json" ] || _fail "a file ga created must go"
+  assert_eq 0 "$(grep -Fxc '.claude/settings.local.json' "$m/.git/info/exclude" || true)"
+}
+test_p23_user_command_removes_isolation() {
+  local r f out; r=$(phys "$(mk_project)"); GA_HARNESS=claude-code ga --root "$r" init >/dev/null
+  f=$(mktemp); printf 'GA 격리해제' >"$f"
+  out=$(GA_HARNESS=claude-code ga --root "$r" user-command --text-file "$f")
+  assert_eq allow "$(jq -r .decision <<<"$out")"; assert_contains "$(jq -r .context <<<"$out")" "GA 일시정지"
+  [ ! -e "$r/.claude/settings.local.json" ] || _fail "isolation settings left"
+  [ ! -e "$r/docs/architecture/.state/enforce.json" ] || _fail "install record left"
+  assert_eq false "$(GA_TEST_MANAGED_SETTINGS=/nonexistent "$ENF" status "$r" | jq -r .active)"
+  # not an MCP tool
+  assert_not_contains "$(cat "$CORE/mcp/server.sh")" "uninstall"
+}
+
+# P24: layouts the adapter cannot resolve with certainty fail closed.
+test_p24_uncertain_layouts_refused() {
+  local b w out rc m
+  b=$(phys "$(mk_project)"); w=$(phys "$(mk_project)"); mkdir -p "$b/x.git/worktrees/wt"; echo "../.." >"$b/x.git/worktrees/wt/commondir"
+  printf '[core]\n\tbare = true\n' >"$b/x.git/config"; echo "gitdir: $b/x.git/worktrees/wt" >"$w/.git"
+  rc=0; out=$("$ENF" install "$w" 2>&1) || rc=$?; assert_eq 2 "$rc"; assert_contains "$out" "저장소"
+  [ ! -e "$b/.claude/settings.local.json" ] || _fail "wrote a file Claude Code does not read"
+  out=$("$ENF" status "$w"); assert_eq false "$(jq -r .active <<<"$out")"; assert_contains "$(jq -r .reason <<<"$out")" "저장소"
+  # a .git file whose gitdir has no commondir (submodule style)
+  w=$(phys "$(mk_project)"); mkdir -p "$b/mods/m"; echo "gitdir: $b/mods/m" >"$w/.git"
+  rc=0; "$ENF" install "$w" >/dev/null 2>&1 || rc=$?; assert_eq 2 "$rc"
+  assert_eq false "$("$ENF" status "$w" | jq -r .active)"
+  # a main checkout whose .git says bare = true
+  read -r m w <<<"$(mk_wt)"; printf '[core]\n\tbare = true\n' >>"$m/.git/config"
+  rc=0; "$ENF" install "$w" >/dev/null 2>&1 || rc=$?; assert_eq 2 "$rc"
+}
+
+# M4: native Windows has no sandbox.
+test_enforce_status_inactive_on_native_windows() {
+  local r; r=$(phys "$(mk_project)"); "$ENF" install "$r" >/dev/null
+  assert_eq false "$(GA_TEST_OSTYPE=msys GA_TEST_MANAGED_SETTINGS=/nonexistent "$ENF" status "$r" | jq -r .active)"
+}
+
+# P16 (b): enforce.sh exec runs a command in the OS sandbox with the design's protected paths read-only.
+test_enforce_exec_protects_state_and_parents() {
+  local r dd rc; [ -x /usr/bin/sandbox-exec ] || command -v bwrap >/dev/null 2>&1 || return 0
+  r=$(phys "$(mk_project)"); GA_HARNESS=claude-code ga --root "$r" init >/dev/null; dd=$(phys "$(mktemp -d)")
+  cp "$r/docs/architecture/.state/state.json" "$HOME/s0"
+  "$ENF" exec "$r" --protect "$dd" -- /bin/sh -c 'cd "$1"; echo x >docs/architecture/.state/state.json; mv docs/architecture docs/y; mv docs d2; echo x >.claude/settings.local.json; echo z >"$2/f"; echo ok >ok.txt' _ "$r" "$dd" >/dev/null 2>&1 || true
+  cmp -s "$r/docs/architecture/.state/state.json" "$HOME/s0" || _fail "state written"
+  [ -d "$r/docs/architecture" ] || _fail "parent renamed"; [ ! -e "$dd/f" ] || _fail "protected dir written"
+  assert_eq true "$(jq -r .sandbox.enabled "$r/.claude/settings.local.json")"; [ -f "$r/ok.txt" ] || _fail "ordinary write failed"
+  rc=0; GA_TEST_SANDBOX_EXEC=/nonexistent/sandbox-exec "$ENF" exec "$r" -- /bin/sh -c 'echo ran >"$1/ran"' _ "$r" 2>"$HOME/err" || rc=$?
+  [ "$rc" != 0 ] || _fail "ran without a sandbox"; [ ! -e "$r/ran" ] || _fail "ran without a sandbox"; assert_contains "$(cat "$HOME/err")" "격리 실행 도구 없음"
 }

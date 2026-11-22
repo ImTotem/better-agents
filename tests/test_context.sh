@@ -82,3 +82,10 @@ test_session_context_isolation_and_fingerprint() { local r t
   assert_contains "$t" "격리: 꺼짐"; assert_contains "$t" "ga_enforce"; assert_contains "$t" "상태 지문: 불일치"; assert_contains "$t" "GA 상태승인"
   t=$(cd "$r" && env -u GA_HARNESS "$CORE/bin/ga" context session-start); assert_contains "$t" "GA_HARNESS"
   rm -rf "$HOME/.local/state/grounded-arch"; assert_contains "$(cd "$r" && ga context session-start)" "상태 지문: 기록 없음"; }
+# P22: commands matching sandbox.excludedCommands run outside the sandbox: SessionStart says so.
+test_p22_session_context_warns_on_excluded_commands() { local r t
+  export GA_TEST_MANAGED_SETTINGS=/nonexistent/ga-managed-settings.json
+  r=$(mk_project); GA_HARNESS=claude-code ga --root "$r" init >/dev/null
+  echo '{"sandbox":{"excludedCommands":["docker *"]}}' >"$r/.claude/settings.json"
+  t=$(cd "$r" && GA_HARNESS=claude-code ga context session-start)
+  assert_contains "$t" "격리: 켜짐"; assert_contains "$t" "excludedCommands"; assert_contains "$t" "docker *"; }

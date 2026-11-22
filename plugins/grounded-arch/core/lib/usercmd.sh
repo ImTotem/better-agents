@@ -1,7 +1,7 @@
 # grounded-arch user commands: ga user-command. Sourced; bash 3.2 + jq. Only defines functions/variables.
 # Output: one JSON line {"decision":"allow|block","reason":"...","context":"..."}, exit 0; exit 2 on internal failure.
 
-GA_VERBS="승인 확인 답 기각 판정 일시정지 재개 되돌리기 새라운드 테스트명령 상태승인"
+GA_VERBS="승인 확인 답 기각 판정 일시정지 재개 되돌리기 새라운드 테스트명령 상태승인 격리해제"
 
 # Per-command accumulators (reset by cmd_user_command).
 GA_UC_FAILS=""   # newline-separated failure reasons
@@ -27,7 +27,7 @@ _uc_out() { # DECISION REASON CONTEXT
 }
 
 # Files under .state that a command may change.
-_uc_files() { echo "state.json ledger.json report.json approvals.jsonl test_command PAUSED snapshot.json"; }
+_uc_files() { echo "state.json ledger.json report.json approvals.jsonl test_command PAUSED snapshot.json enforce.json effect_reported.json"; }
 
 _uc_backup() { # ROOT DIR
   local sd f
@@ -116,7 +116,7 @@ _uc_effect_fp() {
   case "$GA_UC_EFF_RC" in
     0) ;;
     1) _uc_fail "이 단계에서 바뀌면 안 되는 파일이 바뀌었습니다: $(ga_effect_list "$GA_UC_EFF_OUT"). 파일을 되돌린 뒤 다시 승인하거나, 이 변경을 받아들이려면 'GA 상태승인'을 입력하세요"; bad=1 ;;
-    *) _uc_fail "바뀐 파일을 확인하지 못했습니다(ga effect check 실패). docs/architecture/.state/snapshot.json을 확인하세요"; bad=1 ;;
+    *) _uc_fail "바뀐 파일을 확인하지 못했습니다(ga effect check 실패). docs/architecture/.state/snapshot.json을 확인하거나, 'GA 상태승인'으로 지금 파일 상태를 새 기준으로 기록하세요"; bad=1 ;;
   esac
   [ "$bad" = 0 ]
 }
@@ -203,10 +203,19 @@ _uc_approve() { # ROOT POINT QUOTE
       if [ "$mode" = brownfield ]; then
         n=$(jq --argjson r "$round" '[.items[] | select(.round == $r and .kind == "mapping")] | length' "$ldg" 2>/dev/null)
         if ! _uc_isint "$n" || [ "$n" -lt 1 ]; then _uc_fail "기존 코드 대응표(mapping)가 1개 이상 있어야 합니다"; bad=1; fi
+        local skipped
         case "$(_ga_status_json "$root" | jq -r .build_ok)" in
           true) ;;
           false) _uc_fail "빌드 확인이 실패했습니다. 'GA 테스트명령 <명령>'을 확인하거나 고친 뒤 ga_verify를 다시 실행하세요"; bad=1 ;;
-          *) _uc_fail "빌드 확인 결과가 없습니다. 'GA 테스트명령 <명령>'으로 빌드·테스트 명령을 지정한 뒤 ga_verify를 실행하세요"; bad=1 ;;
+          *)
+            skipped=$(jq -r '.build_check.skipped // empty' "$(ga_report_path "$root")" 2>/dev/null)
+            if [ -n "$skipped" ]; then
+              # P16: project code never runs outside the OS isolation, so there is no result.
+              _uc_fail "빌드 확인을 OS 격리 안에서 실행할 수 없어 건너뛰었습니다(${skipped}). 격리 실행 도구(macOS sandbox-exec, Linux bubblewrap)를 갖춘 뒤 ga_verify를 다시 실행하세요"
+            else
+              _uc_fail "빌드 확인 결과가 없습니다. 'GA 테스트명령 <명령>'으로 빌드·테스트 명령을 지정한 뒤 ga_verify를 실행하세요"
+            fi
+            bad=1 ;;
         esac
       fi
       ;;
@@ -339,18 +348,34 @@ _uc_apply() {
       : >"$(ga_state_dir "$root")/PAUSED" || return 2
       ga_fp_mark "$root"
       if [ "$GA_UC_STATE_OK" = 1 ]; then ga_state_set "$root" '.paused = true' || return 2; fi
-      _uc_sum "기록됨: 일시정지 (게이트가 모두 통과합니다. 'GA 재개'로 되돌립니다)"
+      _uc_sum "기록됨: 일시정지 (단계 규칙과 셸 명령의 격리 확인이 꺼집니다. 설계 상태 폴더, 상태 지문, 설정 파일, 플러그인 폴더 보호는 그대로입니다. 'GA 재개'로 되돌립니다)"
       ;;
     재개)
       _uc_noargs 재개 "$rest" || return 1
       rm -f "$(ga_state_dir "$root")/PAUSED" || return 2
       ga_fp_mark "$root"
       if [ "$GA_UC_STATE_OK" = 1 ]; then ga_state_set "$root" '.paused = false' || return 2; fi
-      # P12: what changed while paused is the user's -- the file baseline is taken again.
+      # P12: what changed while paused is the user's -- the file baseline is taken again. P21: the
+      # user sees what the new baseline absorbs (changes outside the phase allow-list).
+      local acc="" eo erc=0
+      if [ "$GA_UC_STATE_OK" = 1 ]; then
+        eo=$(ga_effect_check "$root" 2>/dev/null) || erc=$?
+        [ "$erc" != 1 ] || acc=$(ga_effect_list "$eo")
+      fi
       ga_effect_snapshot "$root" || return 2
       GA_UC_EFF_RC=0
       _uc_sum "기록됨: 재개 (지금 프로젝트 파일 상태를 변경 검사의 새 기준으로 기록했습니다)"
+      if [ -n "$acc" ]; then _uc_sum "새 기준에 들어간 허용 밖 변경: ${acc}"; else _uc_sum "새 기준에 들어간 허용 밖 변경 없음"; fi
       [ "$GA_UC_STATE_OK" = 1 ] || _uc_sum "주의: state.json을 읽을 수 없어 게이트가 다시 막습니다. docs/architecture/.state/state.json을 고치거나 복원하세요"
+      ;;
+    격리해제)
+      # P23: user-only (never an MCP tool). The adapter removes exactly what its install added, after
+      # every line of the message succeeded (the settings file is outside the rollback).
+      _uc_noargs 격리해제 "$rest" || return 1
+      _ga_enforce_script >/dev/null 2>&1 || { _uc_fail "하네스 어댑터(GA_HARNESS)를 찾을 수 없어 격리 설정을 지울 수 없습니다"; return 1; }
+      [ -f "$(ga_state_dir "$root")/$GA_ENFORCE_RECORD" ] ||
+        { _uc_fail "격리 설정 설치 기록(docs/architecture/.state/${GA_ENFORCE_RECORD})이 없어 무엇을 지울지 알 수 없습니다. 설정 파일의 sandbox 항목을 직접 지우세요"; return 1; }
+      GA_UC_UNINSTALL=1
       ;;
     되돌리기)
       _uc_noargs 되돌리기 "$rest" || return 1
@@ -408,7 +433,7 @@ _uc_apply() {
   esac
 }
 
-GA_UC_BDIR=""; GA_UC_ROOT=""; GA_UC_LOCKED=0; GA_UC_RESTORE=0; GA_UC_STATE_OK=1
+GA_UC_BDIR=""; GA_UC_ROOT=""; GA_UC_LOCKED=0; GA_UC_RESTORE=0; GA_UC_STATE_OK=1; GA_UC_UNINSTALL=0
 GA_UC_FP_RC=0; GA_UC_EFF_RC=0; GA_UC_EFF_OUT=""; GA_UC_NOTE="" # set by _uc_prepass
 
 # Restores the backup (when GA_UC_RESTORE=1), fully releases the lock, removes the backup dir.
@@ -467,7 +492,7 @@ cmd_user_command() {
   fi
   if [ "$nl" = 0 ]; then _uc_out allow "" ""; return 0; fi
 
-  GA_UC_FAILS=""; GA_UC_SUM=""; GA_UC_NEXT=""
+  GA_UC_FAILS=""; GA_UC_SUM=""; GA_UC_NEXT=""; GA_UC_UNINSTALL=0
   bdir=$(mktemp -d "${TMPDIR:-/tmp}/ga-uc.XXXXXX") || ga_die "ga: 임시 디렉터리를 만들 수 없습니다" 2
   GA_UC_BDIR=$bdir; GA_UC_ROOT=$root; GA_UC_LOCKED=0
   # Any exit before a clean finish (ga_die from a helper, signal) restores the backup,
@@ -505,6 +530,17 @@ EOF
     return 0
   fi
   GA_UC_RESTORE=0
+  if [ "$GA_UC_UNINSTALL" = 1 ]; then
+    local es err
+    es=$(_ga_enforce_script 2>/dev/null)
+    if err=$("$es" uninstall "$root" 2>&1 >/dev/null); then
+      rm -f "$(ga_state_dir "$root")/$GA_ENFORCE_RECORD"
+      ga_fp_mark "$root"
+      _uc_sum "기록됨: 격리해제 (ga가 넣은 OS 격리 설정만 지웠습니다. 이 저장소의 다른 세션에도 적용됩니다). 설계가 진행 중이면 이제 셸 명령이 막힙니다: 설계를 멈추려면 'GA 일시정지', 격리를 다시 켜려면 에이전트에게 ga_enforce를 요청하세요"
+    else
+      _uc_sum "격리 해제 실패: ${err:-어댑터 오류}. 다른 줄은 적용되었습니다"
+    fi
+  fi
   _uc_abort
   trap - EXIT
   ctx=${GA_UC_NOTE:+$GA_UC_NOTE$'\n'}$GA_UC_SUM
