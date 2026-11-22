@@ -1,5 +1,6 @@
 # grounded-arch user commands: ga user-command. Sourced; bash 3.2 + jq. Only defines functions/variables.
-# Output: one JSON line {"decision":"allow|block","reason":"...","context":"..."}, exit 0; exit 2 on internal failure.
+# Output: one JSON line {"decision":"allow|block","reason":"...","context":"...","notice":"..."}, exit 0;
+# exit 2 on internal failure. notice (P32 M3) is what the user must see too, not only the agent.
 
 GA_VERBS="승인 확인 답 기각 판정 일시정지 재개 되돌리기 새라운드 테스트명령 상태승인 격리해제"
 
@@ -8,12 +9,14 @@ GA_UC_FAILS=""   # newline-separated failure reasons
 GA_UC_SUM=""     # newline-separated "recorded" summaries
 GA_UC_CUR=""     # the GA line being applied
 GA_UC_NEXT=""    # next-step hint from the last phase transition
+GA_UC_NOTICE=""  # newline-separated lines that also go to the user
 
 _uc_fail() { # MSG -> returns 1
   GA_UC_FAILS=${GA_UC_FAILS}${GA_UC_FAILS:+$'\n'}"[$GA_UC_CUR] $1"
   return 1
 }
 _uc_sum() { GA_UC_SUM=${GA_UC_SUM}${GA_UC_SUM:+$'\n'}"$1"; }
+_uc_notice() { _uc_sum "$1"; GA_UC_NOTICE=${GA_UC_NOTICE}${GA_UC_NOTICE:+$'\n'}"$1"; } # recorded + shown to the user
 
 _uc_trim() { # TEXT -> trimmed
   local s=$1
@@ -22,12 +25,12 @@ _uc_trim() { # TEXT -> trimmed
   printf '%s' "$s"
 }
 
-_uc_out() { # DECISION REASON CONTEXT
-  jq -nc --arg d "$1" --arg r "$2" --arg c "$3" '{decision:$d, reason:$r, context:$c}'
+_uc_out() { # DECISION REASON CONTEXT [NOTICE]
+  jq -nc --arg d "$1" --arg r "$2" --arg c "$3" --arg n "${4:-}" '{decision:$d, reason:$r, context:$c} + (if $n == "" then {} else {notice:$n} end)'
 }
 
 # Files under .state that a command may change.
-_uc_files() { echo "state.json ledger.json report.json approvals.jsonl test_command PAUSED snapshot.json enforce.json effect_reported.json"; }
+_uc_files() { echo "state.json ledger.json report.json approvals.jsonl test_command PAUSED snapshot.json snapshot.list enforce.json effect_reported.json"; }
 
 _uc_backup() { # ROOT DIR
   local sd f
@@ -365,7 +368,7 @@ _uc_apply() {
       ga_effect_snapshot "$root" || return 2
       GA_UC_EFF_RC=0
       _uc_sum "기록됨: 재개 (지금 프로젝트 파일 상태를 변경 검사의 새 기준으로 기록했습니다)"
-      if [ -n "$acc" ]; then _uc_sum "새 기준에 들어간 허용 밖 변경: ${acc}"; else _uc_sum "새 기준에 들어간 허용 밖 변경 없음"; fi
+      if [ -n "$acc" ]; then _uc_notice "GA 재개: 새 기준에 들어간 허용 밖 변경: ${acc}"; else _uc_sum "새 기준에 들어간 허용 밖 변경 없음"; fi
       [ "$GA_UC_STATE_OK" = 1 ] || _uc_sum "주의: state.json을 읽을 수 없어 게이트가 다시 막습니다. docs/architecture/.state/state.json을 고치거나 복원하세요"
       ;;
     격리해제)
@@ -492,7 +495,7 @@ cmd_user_command() {
   fi
   if [ "$nl" = 0 ]; then _uc_out allow "" ""; return 0; fi
 
-  GA_UC_FAILS=""; GA_UC_SUM=""; GA_UC_NEXT=""; GA_UC_UNINSTALL=0
+  GA_UC_FAILS=""; GA_UC_SUM=""; GA_UC_NEXT=""; GA_UC_NOTICE=""; GA_UC_UNINSTALL=0
   bdir=$(mktemp -d "${TMPDIR:-/tmp}/ga-uc.XXXXXX") || ga_die "ga: 임시 디렉터리를 만들 수 없습니다" 2
   GA_UC_BDIR=$bdir; GA_UC_ROOT=$root; GA_UC_LOCKED=0
   # Any exit before a clean finish (ga_die from a helper, signal) restores the backup,
@@ -536,15 +539,15 @@ EOF
     if err=$("$es" uninstall "$root" 2>&1 >/dev/null); then
       rm -f "$(ga_state_dir "$root")/$GA_ENFORCE_RECORD"
       ga_fp_mark "$root"
-      _uc_sum "기록됨: 격리해제 (ga가 넣은 OS 격리 설정만 지웠습니다. 이 저장소의 다른 세션에도 적용됩니다). 설계가 진행 중이면 이제 셸 명령이 막힙니다: 설계를 멈추려면 'GA 일시정지', 격리를 다시 켜려면 에이전트에게 ga_enforce를 요청하세요"
+      _uc_notice "기록됨: 격리해제 (ga가 넣은 OS 격리 설정만 지웠습니다. 이 저장소의 다른 세션에도 적용됩니다). 설계가 진행 중이면 이제 셸 명령이 막힙니다: 설계를 멈추려면 'GA 일시정지', 격리를 다시 켜려면 에이전트에게 ga_enforce를 요청하세요"
     else
-      _uc_sum "격리 해제 실패: ${err:-어댑터 오류}. 다른 줄은 적용되었습니다"
+      _uc_notice "격리 해제 실패: ${err:-어댑터 오류}. 다른 줄은 적용되었습니다"
     fi
   fi
   _uc_abort
   trap - EXIT
   ctx=${GA_UC_NOTE:+$GA_UC_NOTE$'\n'}$GA_UC_SUM
   [ -n "$GA_UC_NEXT" ] && ctx=$ctx$'\n'"다음: $GA_UC_NEXT"
-  _uc_out allow "" "$ctx"
+  _uc_out allow "" "$ctx" "$GA_UC_NOTICE"
   return 0
 }

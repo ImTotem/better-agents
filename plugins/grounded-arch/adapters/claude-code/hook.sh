@@ -5,20 +5,12 @@
 # EVENT: pre-write | pre-bash | stop | user-prompt | session-start
 # bash 3.2 + jq only.
 
-# Hooks run outside the OS sandbox (spec 5.5): nothing the agent can write runs here. PATH keeps only
-# absolute entries outside the project (the hook's cwd may be anywhere in it), jq by absolute path.
-_p=""; _o=$IFS; IFS=:; set -f
-for _e in $PATH; do
-  case "$_e" in /*) ;; *) continue ;; esac
-  for _r in "${CLAUDE_PROJECT_DIR:-}" "$PWD"; do
-    case "$_r" in "" | /) continue ;; esac
-    case "${_e%/}/" in "${_r%/}"/*) continue 2 ;; esac
-  done
-  _p=${_p:+$_p:}$_e
-done
-set +f; IFS=$_o; PATH=$_p; export PATH; unset _p _o _e _r
+# Hooks run outside the OS sandbox (spec 5.5, P28): only system tools run here. The caller's PATH is
+# kept as GA_USER_PATH for the verifier runners and the sandboxed build check; jq is /usr/bin/jq.
+GA_USER_PATH=${GA_USER_PATH:-$PATH}
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export GA_USER_PATH PATH
 GA_JQ=/usr/bin/jq
-[ -x "$GA_JQ" ] || GA_JQ=$(type -P jq 2>/dev/null) || GA_JQ=/nonexistent/jq
 # The test suite simulates a missing or broken jq (honored only in test mode).
 if [ "${GA_TEST_MODE:-}" = 1 ] && [ -n "${GA_TEST_JQ:-}" ]; then GA_JQ=$GA_TEST_JQ; fi
 jq() { "$GA_JQ" "$@"; }
@@ -30,7 +22,9 @@ while [ -L "$_self" ]; do
   case "$_self" in /*) ;; *) _self=$_dir/$_self ;; esac
 done
 PLUGIN_ROOT=$(cd -P "$(dirname "$_self")/../.." && pwd)
-GA=${GA_BIN:-$PLUGIN_ROOT/core/bin/ga}
+GA=$PLUGIN_ROOT/core/bin/ga
+# The test suite replaces ga with a stub (honored only in test mode).
+if [ "${GA_TEST_MODE:-}" = 1 ] && [ -n "${GA_BIN:-}" ]; then GA=$GA_BIN; fi
 # The core asks this harness's adapter (adapters/claude-code/enforce.sh) about the OS isolation.
 GA_HARNESS=claude-code
 export GA_HARNESS
@@ -47,13 +41,17 @@ case "${CLAUDE_PROJECT_DIR:-}" in /*) GA_SESSION_ROOT=$CLAUDE_PROJECT_DIR ;; *) 
 export GA_SESSION_ROOT
 
 # R35-1: without a working jq, or with an event that is not a JSON object, the adapter cannot
-# read the tool call. Writes and shell commands are then denied when a design is active for the
-# session directory (`ga root --active` needs no jq); without a design they pass as before.
+# read the tool call (`ga root` needs no jq). Shell commands are denied while a design is in force
+# for the session directory; a PAUSED marker opens them (the recovery). P21/P32: the write target is
+# unknown, so writes stay denied while a design exists, paused or not -- a PAUSED marker never opens
+# the state folder or the fingerprint store. Without a design both pass as before.
 case "$event" in
   pre-write | pre-bash)
     if ! printf '%s' "$input" | jq -e 'type == "object"' >/dev/null 2>&1; then
-      if "$GA" root --active >/dev/null 2>&1; then
-        printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"grounded-arch: jq를 실행할 수 없거나 훅 입력을 읽을 수 없어 판정하지 못했으므로 막습니다. 사용자에게 알리세요: jq(/usr/bin/jq)가 동작하도록 고치거나, 사용자가 docs/architecture/.state/PAUSED 파일을 직접 만들면(touch) 게이트가 풀립니다."}}'
+      if [ "$event" = pre-bash ] && "$GA" root --active >/dev/null 2>&1; then
+        printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"grounded-arch: jq를 실행할 수 없거나 훅 입력을 읽을 수 없어 판정하지 못했으므로 막습니다. 사용자에게 알리세요: jq(/usr/bin/jq)가 동작하도록 고치거나, 사용자가 docs/architecture/.state/PAUSED 파일을 직접 만들면(touch) 셸 명령이 풀립니다."}}'
+      elif [ "$event" = pre-write ] && "$GA" root >/dev/null 2>&1; then
+        printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"grounded-arch: jq를 실행할 수 없거나 훅 입력을 읽을 수 없어 어느 파일에 쓰는지 판정하지 못했으므로 막습니다. 설계 상태 폴더와 상태 지문 저장 위치를 지키기 위해 일시정지(PAUSED) 중에도 쓰기 도구는 막힙니다. 사용자에게 알리세요: jq(/usr/bin/jq)가 동작하도록 고쳐야 풀립니다(셸 명령은 일시정지로 풀 수 있습니다)."}}'
       fi
       exit 0
     fi
@@ -102,8 +100,9 @@ emit_deny() { # REASON
 emit_block() { # REASON [NOTICE]  (systemMessage: shown to the user)
   jq -n --arg r "$1" --arg n "${2:-}" '{decision:"block",reason:$r} + (if $n == "" then {} else {systemMessage:$n} end)'
 }
-emit_context() { # EVENTNAME TEXT
-  jq -n --arg e "$1" --arg c "$2" '{hookSpecificOutput:{hookEventName:$e,additionalContext:$c}}'
+emit_context() { # EVENTNAME TEXT [NOTICE]  (systemMessage: shown to the user)
+  jq -n --arg e "$1" --arg c "$2" --arg n "${3:-}" '{hookSpecificOutput:{hookEventName:$e,additionalContext:$c}}
+    + (if $n == "" then {} else {systemMessage:$n} end)'
 }
 
 ga_error_reason() {
@@ -161,18 +160,21 @@ case "$event" in
       if [ $rc -eq 0 ]; then
         [ -n "$V_CONTEXT" ] && ctx=$ctx$'\n'$V_CONTEXT
       else
-        ctx=$ctx$'\n'"ga 오류: ${HOOK_ERR}"
+        ctx=$ctx$'\n'"ga 오류: ${HOOK_ERR}"; V_NOTICE=""
       fi
-      emit_context UserPromptSubmit "$ctx"
+      # P32 (M3): what the user must see (GA 재개's accepted files, GA 격리해제) also goes to the user.
+      emit_context UserPromptSubmit "$ctx" "$V_NOTICE"
     fi
     ;;
   session-start)
-    rc=0
-    ctx=$("$GA" context session-start 2>/dev/null) || rc=$?
-    if [ $rc -ne 0 ]; then
-      ctx=$ctx$'\n'"ga 오류: 세션 컨텍스트를 만들지 못했습니다 (종료 코드 ${rc})"
+    rc=0; notice=""
+    out=$("$GA" context session-start --json 2>/dev/null) || rc=$?
+    if [ $rc -eq 0 ] && ctx=$(printf '%s' "$out" | jq -er '.context | strings' 2>/dev/null); then
+      notice=$(printf '%s' "$out" | jq -r '.notice // ""' 2>/dev/null)
+    else
+      ctx="ga 오류: 세션 컨텍스트를 만들지 못했습니다 (종료 코드 ${rc})"
     fi
-    [ -n "$ctx" ] && emit_context SessionStart "$ctx"
+    [ -n "$ctx$notice" ] && emit_context SessionStart "$ctx" "$notice"
     ;;
   *)
     echo "hook.sh: 알 수 없는 이벤트: $event" >&2

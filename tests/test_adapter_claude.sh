@@ -147,3 +147,52 @@ test_p20_hooks_ignore_path_jq_git_and_relative_entries() { local p d m t
   hev "$p" '{"prompt":"안녕"}' | (cd "$p" && PATH="rel:$d:$PATH" hk user-prompt) >/dev/null
   jq -nc --arg c "$p" '{cwd:$c,tool_name:"Write",tool_input:{file_path:($c + "/src/b.c"),content:"x"}}' | (cd "$p" && PATH="rel:$d:$PATH" hk pre-write) >/dev/null
   [ ! -e "$m" ] || _fail "a jq, git or mktemp found on PATH (or a relative entry) ran"; }
+
+# --- second fix wave (P28): code outside the sandbox runs only system tools ---
+# Every hook, the adapter and ga take their own tools (tail, sed, mktemp, jq, git, sha256sum ...) from
+# the system folders only, never from the user's PATH -- even from absolute entries outside the project.
+test_p28_hooks_run_only_system_tools() { local p d m e
+  p=$(fp15); export CLAUDE_PROJECT_DIR=$p; d=$(mktemp -d); m=$HOME/tools-ran; e=$(mktemp -d); fake_tools "$d" "$m"
+  echo 'int y;' >>"$p/src/a.c"
+  hev "$p" '{"source":"startup"}' >"$e/ss"; hev "$p" '{"prompt":"안녕"}' >"$e/up"; hev "$p" '{"prompt":"GA 일시정지"}' >"$e/pz"
+  jq -nc --arg c "$p" '{cwd:$c,tool_name:"Write",tool_input:{file_path:($c + "/docs/architecture/x.md"),content:"x"}}' >"$e/pw"
+  hev "$p" '{"tool_name":"Bash","tool_input":{"command":"ls"}}' >"$e/pb"; hev "$p" '{"stop_hook_active":false}' >"$e/st"
+  ( export PATH="$d:$PATH"
+    hk session-start <"$e/ss"; hk user-prompt <"$e/up"; hk pre-write <"$e/pw"; hk pre-bash <"$e/pb"; hk stop <"$e/st"
+    hk user-prompt <"$e/pz"; "$PLUGIN/adapters/claude-code/enforce.sh" status "$p"; "$CORE/bin/ga" --root "$p" effect check
+  ) >/dev/null 2>&1 || true
+  [ ! -e "$m" ] || _fail "tools from the user's PATH ran outside the sandbox: $(sort -u "$m" | tr '\n' ' ')"; }
+# Outside test mode, nothing in the environment can point the hook at another program.
+test_p28_test_overrides_ignored_outside_test_mode() { local r s m out
+  r=$(inputs_root); m=$HOME/stub-ran; s=$(mktemp)
+  printf '#!/bin/bash\n: >"%s"\necho "{\\"decision\\":\\"allow\\",\\"reason\\":\\"\\"}"\n' "$m" >"$s"; chmod +x "$s"
+  out=$(ev write_src "$r" | env -u GA_TEST_MODE GA_BIN="$s" "$PLUGIN/adapters/claude-code/hook.sh" pre-write)
+  [ ! -e "$m" ] || _fail "GA_BIN outside test mode ran another program"
+  assert_eq deny "$(jq -r .hookSpecificOutput.permissionDecision <<<"$out")"; }
+# macOS: git is the developer tools' own binary, never the /usr/bin/git shim (it runs DEVELOPER_DIR's xcrun).
+test_p28_git_is_never_the_xcrun_shim() { local p d m rc
+  [ -x /usr/bin/xcode-select ] || return 0
+  p=$(fp15); d=$(mktemp -d); m=$HOME/shim-ran; mkdir -p "$d/usr/bin"
+  printf '#!/bin/bash\n: >"%s"\nexit 1\n' "$m" >"$d/usr/bin/xcrun"; chmod +x "$d/usr/bin/xcrun"
+  echo 'int y;' >>"$p/src/a.c"
+  rc=0; DEVELOPER_DIR=$d "$CORE/bin/ga" --root "$p" effect check >"$HOME/out" 2>/dev/null || rc=$?
+  [ ! -e "$m" ] || _fail "the /usr/bin/git shim ran a program from DEVELOPER_DIR"
+  assert_eq 1 "$rc"; assert_eq '["src/a.c"]' "$(jq -c .violations "$HOME/out")"; }
+
+# --- P32: user-visible confirmations reach the user, and the jq-unusable path keeps P21 ---
+# M3: the GA 재개 list, the GA 격리해제 confirmation and the excludedCommands warning go out as systemMessage.
+test_p32_confirmations_reach_the_user() { local p out s
+  p=$(fp15); export CLAUDE_PROJECT_DIR=$p
+  hev "$p" '{"prompt":"GA 일시정지"}' | hk user-prompt >/dev/null; echo n >"$p/src/n.c"
+  out=$(hev "$p" '{"prompt":"GA 재개"}' | hk user-prompt); assert_contains "$(jq -r '.systemMessage // ""' <<<"$out")" src/n.c
+  s=$p/.claude/settings.local.json; jq '.sandbox.excludedCommands = ["docker *"]' "$s" >"$s.x"; mv "$s.x" "$s"
+  out=$(hev "$p" '{"source":"startup"}' | hk session-start); assert_contains "$(jq -r '.systemMessage // ""' <<<"$out")" "docker *"
+  out=$(hev "$p" '{"prompt":"GA 격리해제"}' | hk user-prompt); assert_contains "$(jq -r '.systemMessage // ""' <<<"$out")" "격리해제"; }
+# P21 in the jq-unusable path: a PAUSED marker never opens writes to the state folder or the fingerprint store.
+test_p32_jq_unusable_pause_keeps_state_and_store_locked() { local r p out
+  r=$(inputs_root); : >"$r/docs/architecture/.state/PAUSED"
+  for p in "$r/docs/architecture/.state/state.json" "$HOME/.local/state/grounded-arch/x.json"; do
+    out=$(jq -nc --arg c "$r" --arg p "$p" '{cwd:$c,tool_name:"Write",tool_input:{file_path:$p,content:"x"}}' | (cd "$r" && GA_TEST_JQ=/nonexistent/jq hk pre-write))
+    assert_contains "$out" '"permissionDecision":"deny"'
+  done
+  assert_eq "" "$(ev bash_redirect "$r" | (cd "$r" && GA_TEST_JQ=/nonexistent/jq hk pre-bash))"; }

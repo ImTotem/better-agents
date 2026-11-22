@@ -277,7 +277,7 @@ test_p19_settings_files_are_not_effect_violations() { local r s out
   out=$(gs "$r"); assert_eq allow "$(dec "$out")"; assert_eq "" "$(notice "$out")"
   assert_eq '[]' "$(cd "$r" && GA_HARNESS=claude-code ga effect check | jq -c .violations)"; }
 
-# P20: Write/Edit never touch a file that runs outside the sandbox -- design or not, paused or not.
+# P20: Write/Edit never touch a file that runs outside the sandbox -- paused or not (P30: while a design exists).
 test_p20_write_denies_files_run_outside_sandbox() { local r q p
   r=$(enforced implement); git -C "$r" init -q; cd "$r"
   for p in "$r/.git/config" "$r/.git/hooks/pre-commit" "$r/.git/HOOKS/post-checkout" "$r/.git/modules/m/config" "$r/.git/modules/m/hooks/x" \
@@ -289,10 +289,8 @@ test_p20_write_denies_files_run_outside_sandbox() { local r q p
     [ "$(dec "$(gw "$p")")" = allow ] || _fail "denied: $p"
   done
   set_state "$r" '.paused=true'; assert_eq deny "$(dec "$(gw "$r/.git/config")")"; assert_eq deny "$(dec "$(gw "$r/.mcp.json")")"
+  # P30 (second wave): without a design anywhere these are ordinary files (test_p30_no_design_denies_nothing)
   q=$(mk_project); git -C "$q" init -q; cd "$q"
-  for p in "$q/.git/config" "$q/.git/hooks/pre-commit" "$q/.mcp.json" "$HOME/.claude.json" "$HOME/.claude/plugins/x.sh"; do
-    [ "$(dec "$(gw "$p")")" = deny ] || _fail "not denied without a design: $p"
-  done
   assert_eq allow "$(dec "$(gw "$q/src/a.c")")"; assert_eq allow "$(dec "$(gw "$HOME/.claude/settings.json")")"; }
 
 # P21: GA 일시정지 turns off the phase rules only; the integrity protections and the fingerprint stay.
@@ -314,3 +312,47 @@ test_p21_resume_lists_accepted_files() { local r out i
   uc "$r" 'GA 일시정지' >/dev/null; for i in $(seq 1 25); do echo "$i" >"$r/src/f$i.c"; done
   out=$(uc "$r" 'GA 재개'); assert_contains "$out" "외 5개"
   uc "$r" 'GA 일시정지' >/dev/null; out=$(uc "$r" 'GA 재개'); assert_contains "$(jq -r .context <<<"$out")" "허용 밖 변경 없음"; }
+
+# --- second fix wave (P30): what runs outside the sandbox is protected only with a design (no design,
+# no change), and then also <root>/.claude/hooks (hook scripts run outside the sandbox) ---
+test_p30_no_design_denies_nothing() { local q p
+  q=$(mk_project); git -C "$q" init -q; cd "$q"
+  for p in "$q/.mcp.json" "$q/.git/hooks/pre-commit" "$q/.git/config" "$HOME/.claude.json" \
+           "$HOME/.claude/plugins/marketplaces/m/skills/s/SKILL.md" "$q/.claude/hooks/check.sh"; do
+    [ "$(dec "$(gw "$p")")" = allow ] || _fail "denied without a design: $p"
+  done; }
+test_p30_design_denies_paused_too_and_hook_scripts() { local r m w p
+  r=$(enforced implement); git -C "$r" init -q; cd "$r"
+  for p in "$r/.mcp.json" "$r/.git/hooks/pre-commit" "$r/.git/config" "$HOME/.claude.json" "$HOME/.claude/plugins/x.sh" \
+           "$r/.claude/hooks/check.sh" "$r/.claude/HOOKS/sub/y.sh"; do
+    [ "$(dec "$(gw "$p")")" = deny ] || _fail "not denied with a design: $p"
+  done
+  assert_eq allow "$(dec "$(gw "$r/.claude/agents/a.md")")"
+  uc "$r" 'GA 일시정지' >/dev/null
+  for p in "$r/.mcp.json" "$r/.git/hooks/pre-commit" "$HOME/.claude.json" "$r/.claude/hooks/check.sh"; do
+    [ "$(dec "$(gw "$p")")" = deny ] || _fail "not denied while paused: $p"
+  done
+  # a design in a worktree also protects the main checkout's hook scripts
+  m=$(mk_project); m=$(cd -P "$m" && pwd -P); git -C "$m" init -q; echo a >"$m/a"; git -C "$m" add a; git -C "$m" -c user.email=t@example.com -c user.name=t commit -qm a
+  w=$(mktemp -d)/wt; git -C "$m" worktree add -q "$w" 2>/dev/null; w=$(cd -P "$w" && pwd -P); GA_HARNESS=claude-code ga --root "$w" init >/dev/null; cd "$w"
+  assert_eq deny "$(dec "$(gw "$m/.claude/hooks/x.sh")")"; assert_eq deny "$(dec "$(gw "$w/.claude/hooks/x.sh")")"; }
+
+# --- P31: one spelling per file ---
+# The /System/Volumes/Data firmlink spelling of a home path or the plugin is judged like the plain one.
+test_p31_firmlink_spelling_judged_like_plain() { local r h f p
+  [ -d /System/Volumes/Data ] || return 0
+  r=$(enforced inputs); cd "$r"; h=$(cd -P "$HOME" && pwd -P); f=/System/Volumes/Data$h
+  [ "$(stat -f %d:%i "$h" 2>/dev/null)" = "$(stat -f %d:%i "$f" 2>/dev/null)" ] || return 0
+  for p in .local/state/grounded-arch/x.json .claude/settings.json .claude.json .claude/plugins/x/y.sh; do
+    assert_eq deny "$(dec "$(gw "$h/$p")")"
+    [ "$(dec "$(gw "$f/$p")")" = deny ] || _fail "firmlink spelling allowed: $f/$p"
+  done
+  p=$(cd -P "$PLUGIN" && pwd -P)/core/lib/gates.sh
+  assert_eq deny "$(dec "$(gw "$p")")"; [ "$(dec "$(gw "/System/Volumes/Data$p")")" = deny ] || _fail "firmlink spelling allowed: $p"; }
+
+# --- P32: while the fingerprint mismatches, ledger format errors do not keep Stop blocking (the agent
+# cannot fix them: the MCP tools refuse); the mismatch itself blocks once, then is a notice (P13) ---
+test_p32_stop_format_errors_do_not_block_while_fp_mismatch() { local r out
+  r=$(enforced iterating); seed_ledger "$r" "$FIX/ledger_bad_asm.json"; tamper_state "$r" '.x = 1'
+  out=$(gs "$r"); assert_eq block "$(dec "$out")"; assert_contains "$out" "상태 지문"; assert_not_contains "$out" "형식 오류"
+  out=$(gs "$r" true); assert_eq allow "$(dec "$out")"; assert_contains "$(notice "$out")" "상태 지문"; }

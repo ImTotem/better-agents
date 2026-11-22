@@ -154,8 +154,8 @@ _ga_gate_write() {
   sroot=""
   [ -z "$sdir" ] || sroot=$(ga_find_root "$sdir") || sroot=""
 
-  # 1. Always -- design or not, paused or not (P15, P20): nothing that guards a design and nothing
-  #    that later runs outside the sandbox.
+  # 1. Always -- design or not, paused or not (P15): the fingerprint store and any design state
+  #    folder (they exist only for a design).
   fpd=$(ga_canon "$(ga_fp_dir)") || fpd=""
   if [ -n "$fpd" ] && _ga_under "$fpd" "$c"; then
     _ga_gate_out deny "상태 지문 저장 위치($fpd)는 ga만 씁니다. 쓰기 도구로는 고칠 수 없습니다"
@@ -165,26 +165,28 @@ _ga_gate_write() {
     _ga_gate_out deny "설계 상태 폴더($sr/docs/architecture/.state)는 ga만 수정합니다. MCP 도구(ga_add, ga_update 등)를 쓰세요. 일시정지 중에도 막힙니다"
     return 0
   fi
-  if _ga_git_exec_path "$c"; then
-    _ga_gate_out deny "git 설정과 훅($c)은 격리 밖의 git이 실행하므로 쓰기 도구로 고칠 수 없습니다. 바꿔야 하면 사용자에게 직접 고쳐 달라고 요청하세요"
-    return 0
-  fi
-  # The harness adapter names its own files: 3 = a file the harness runs outside the sandbox (always
-  # protected), 0 = a settings file with the isolation settings (protected while a design exists).
-  dr=${root:-${sroot:-$sdir}}
-  kind=1
-  [ -z "$dr" ] || { ga_enforce_protects "$dr" "$c"; kind=$?; }
-  if [ "$kind" = 3 ]; then
-    _ga_gate_out deny "하네스가 격리 밖에서 실행하는 파일($c)은 쓰기 도구로 고칠 수 없습니다. 바꿔야 하면 사용자에게 직접 고쳐 달라고 요청하세요"
-    return 0
-  fi
 
-  # 2. While a design exists for the path or the session, paused or not (P21): the plugin (R34d)
-  #    and the harness's settings files.
+  # 2. While a design exists for the path or the session, paused or not (P21, P30): the plugin
+  #    (R34d), what runs outside the sandbox (git config and hooks; the harness's files: .mcp.json,
+  #    hook scripts, ~/.claude.json, its plugins) and the harness's settings files. Without a design
+  #    the plugin changes nothing (spec 2).
   if [ -n "$root$sroot" ]; then
     plug=$(_ga_plugin_root)
     if [ -n "$plug" ] && _ga_under "$plug" "$c"; then
       _ga_gate_out deny "설계가 있는 동안(일시정지 중에도) grounded-arch 플러그인 파일($plug)은 고칠 수 없습니다. 플러그인을 고쳐야 하면 사용자에게 직접 고쳐 달라고 요청하세요"
+      return 0
+    fi
+    if _ga_git_exec_path "$c"; then
+      _ga_gate_out deny "설계가 있는 동안(일시정지 중에도) git 설정과 훅($c)은 격리 밖의 git이 실행하므로 쓰기 도구로 고칠 수 없습니다. 바꿔야 하면 사용자에게 직접 고쳐 달라고 요청하세요"
+      return 0
+    fi
+    # The harness adapter names its own files: 3 = a file the harness runs outside the sandbox,
+    # 0 = a settings file with the isolation settings.
+    dr=${root:-$sroot}
+    ga_enforce_protects "$dr" "$c"
+    kind=$?
+    if [ "$kind" = 3 ]; then
+      _ga_gate_out deny "설계가 있는 동안(일시정지 중에도) 하네스가 격리 밖에서 실행하는 파일($c)은 쓰기 도구로 고칠 수 없습니다. 바꿔야 하면 사용자에게 직접 고쳐 달라고 요청하세요"
       return 0
     fi
     if [ "$kind" != 1 ]; then
@@ -275,9 +277,11 @@ _ga_gate_stop() {
   if ! _ga_gate_state "$root"; then _ga_gate_out allow ""; return 0; fi
   if [ "$GS_PAUSED" = true ]; then _ga_stop_fp_out "$frc" "$ha" "" ""; return 0; fi
 
-  # Format errors: they keep blocking even with stop_hook_active (the agent can fix them).
+  # Format errors: they keep blocking even with stop_hook_active (the agent can fix them). P32: not
+  # while the fingerprint mismatches -- then the MCP tools refuse, so the agent cannot fix them; the
+  # mismatch itself blocks once (below).
   rc=0
-  out=$( GA_ROOT=$root cmd_check --json 2>/dev/null ) || rc=$?
+  if [ "$frc" = 1 ]; then out=""; else out=$( GA_ROOT=$root cmd_check --json 2>/dev/null ) || rc=$?; fi
   case "$rc" in
     0) ;;
     1)

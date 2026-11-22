@@ -4,11 +4,19 @@ cmd_rule() {
   cat "$GA_CORE/rules/inject.txt"
 }
 
+# --json: {"context": the text, "notice": what the user must see too (P32 M3: the adapter's warnings,
+# e.g. commands that run outside the sandbox)}.
 cmd_context() {
-  local sub=${1:-}
-  case "$sub" in
-    session-start) _ga_context_session_start ;;
-    *) ga_die "사용법: ga context session-start" 2 ;;
+  local sub=${1:-} f
+  case "$sub:${2:-}:$#" in
+    session-start::1) _ga_context_session_start ;;
+    session-start:--json:2)
+      f=$(mktemp "${TMPDIR:-/tmp}/ga-ctx.XXXXXX") || ga_die "ga: 임시 파일을 만들 수 없습니다" 2
+      GA_CTX_NOTICE=""
+      _ga_context_session_start >"$f"
+      jq -nc --rawfile c "$f" --arg n "$GA_CTX_NOTICE" '{context: ($c | rtrimstr("\n")), notice: $n}'
+      rm -f "$f" ;;
+    *) ga_die "사용법: ga context session-start [--json]" 2 ;;
   esac
 }
 
@@ -75,9 +83,16 @@ _ga_context_guard() { # ROOT
     why=$(printf '%s' "$st" | jq -r '.reason // ""' 2>/dev/null)
     iso="격리: 꺼짐 (${why:-이유를 알 수 없음}. 일시정지가 아니면 셸 명령이 막힙니다. MCP 도구 ga_enforce로 다시 설치하거나 사용자에게 'GA 일시정지'를 요청하세요)"
   fi
-  # P22: the adapter's warnings (e.g. commands that run outside the sandbox).
+  # P22: the adapter's warnings (e.g. commands that run outside the sandbox); P32: the user sees them too.
   warn=$(printf '%s' "$st" | jq -r '.warnings // [] | .[] | strings' 2>/dev/null)
-  [ -z "$warn" ] || printf '%s\n' "$warn" | while IFS= read -r why; do echo "경고: ${why}"; done
+  if [ -n "$warn" ]; then
+    while IFS= read -r why; do
+      echo "경고: ${why}"
+      GA_CTX_NOTICE=${GA_CTX_NOTICE:-}${GA_CTX_NOTICE:+ }"grounded-arch 경고: ${why}"
+    done <<EOF
+$warn
+EOF
+  fi
   ga_fp_check "$1" >/dev/null 2>&1 || rc=$?
   case "$rc" in
     0) fp="상태 지문: 일치" ;;
