@@ -59,8 +59,9 @@ _ga_watch() { # SECS OUT ERR CMD...
   kill -STOP "$wd" 2>/dev/null
   kids=$(pgrep -P "$wd" 2>/dev/null)
   kill -KILL "$wd" 2>/dev/null
-  for k in $kids; do _ga_killtree "$k"; done
+  # reaped at once, with stderr closed, so bash prints no "Killed: 9" job line
   wait "$wd" 2>/dev/null
+  for k in $kids; do _ga_killtree "$k"; done
   GA_WATCH_TIMEOUT=0
   if [ -e "$mark" ]; then GA_WATCH_TIMEOUT=1; rm -f "$mark"; fi
   return 0
