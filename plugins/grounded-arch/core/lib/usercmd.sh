@@ -115,7 +115,7 @@ _uc_effect_fp() {
   esac
   case "$GA_UC_EFF_RC" in
     0) ;;
-    1) _uc_fail "이 단계에서 바뀌면 안 되는 파일이 바뀌었습니다: $(ga_effect_list "$GA_UC_EFF_OUT"). 에이전트에게 되돌리게 하거나 직접 되돌린 뒤 다시 승인하세요"; bad=1 ;;
+    1) _uc_fail "이 단계에서 바뀌면 안 되는 파일이 바뀌었습니다: $(ga_effect_list "$GA_UC_EFF_OUT"). 파일을 되돌린 뒤 다시 승인하거나, 이 변경을 받아들이려면 'GA 상태승인'을 입력하세요"; bad=1 ;;
     *) _uc_fail "바뀐 파일을 확인하지 못했습니다(ga effect check 실패). docs/architecture/.state/snapshot.json을 확인하세요"; bad=1 ;;
   esac
   [ "$bad" = 0 ]
@@ -346,7 +346,10 @@ _uc_apply() {
       rm -f "$(ga_state_dir "$root")/PAUSED" || return 2
       ga_fp_mark "$root"
       if [ "$GA_UC_STATE_OK" = 1 ]; then ga_state_set "$root" '.paused = false' || return 2; fi
-      _uc_sum "기록됨: 재개"
+      # P12: what changed while paused is the user's -- the file baseline is taken again.
+      ga_effect_snapshot "$root" || return 2
+      GA_UC_EFF_RC=0
+      _uc_sum "기록됨: 재개 (지금 프로젝트 파일 상태를 변경 검사의 새 기준으로 기록했습니다)"
       [ "$GA_UC_STATE_OK" = 1 ] || _uc_sum "주의: state.json을 읽을 수 없어 게이트가 다시 막습니다. docs/architecture/.state/state.json을 고치거나 복원하세요"
       ;;
     되돌리기)
@@ -380,11 +383,15 @@ _uc_apply() {
       ;;
     상태승인)
       _uc_noargs 상태승인 "$rest" || return 1
+      # P12: the user accepts the whole current state -- the project files (a new file baseline)
+      # and the state folder (the fingerprint, recorded at the final unlock, so it covers both).
+      ga_effect_snapshot "$root" || return 2
       _uc_append_approval "$root" 상태승인 "" "" 0 0 "$quote" || return 2
       ga_fp_mark "$root" force
       # A later GA 승인 in the same message sees the accepted state.
       [ "$GA_UC_FP_RC" = 3 ] || GA_UC_FP_RC=0
-      _uc_sum "기록됨: 상태 지문을 현재 상태 파일 기준으로 다시 기록했습니다"
+      GA_UC_EFF_RC=0
+      _uc_sum "기록됨: 지금 상태를 받아들였습니다 (상태 지문을 다시 기록하고, 지금 프로젝트 파일 상태를 변경 검사의 새 기준으로 기록했습니다)"
       ;;
     테스트명령)
       [ -n "$rest" ] || { _uc_fail "사용법: GA 테스트명령 <빌드·테스트 명령> (명령이 비어 있으면 안 됩니다)"; return 1; }

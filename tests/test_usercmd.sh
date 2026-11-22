@@ -155,7 +155,20 @@ test_state_accept_trailing_text_blocks() { r=$(ready_inputs); out=$(uc "$r" "GA 
 test_approval_blocked_by_effect_violation() { local r out
   r=$(ready_inputs); mkdir -p "$r/src"; echo 'int x;' >"$r/src/hack.c"
   out=$(uc "$r" 'GA 승인 입력'); assert_eq block "$(dec "$out")"; assert_contains "$out" src/hack.c; assert_eq inputs "$(sj "$r" .phase)"
+  assert_contains "$out" "되돌린 뒤"; assert_contains "$out" "GA 상태승인"
   rm -f "$r/src/hack.c"; out=$(uc "$r" 'GA 승인 입력'); assert_eq allow "$(dec "$out")"; assert_eq iterating "$(sj "$r" .phase)"; }
+# P12: the user accepts a file change with GA 상태승인 (also in the same message as the approval),
+# or by pausing around it (GA 재개 takes a new file baseline).
+test_approval_after_user_accepts_file_change() { local r out
+  r=$(ready_inputs); mkdir -p "$r/src"; echo 'int x;' >"$r/src/user.c"
+  out=$(uc "$r" "GA 상태승인
+GA 승인 입력"); assert_eq allow "$(dec "$out")"; assert_eq iterating "$(sj "$r" .phase)"
+  r=$(ready_inputs); uc "$r" 'GA 일시정지' >/dev/null; mkdir -p "$r/src"; echo 'int y;' >"$r/src/paused.c"; uc "$r" 'GA 재개' >/dev/null
+  assert_eq allow "$(dec "$(uc "$r" 'GA 승인 입력')")"; assert_eq iterating "$(sj "$r" .phase)"
+  # a refused message rolls the new baseline back too
+  r=$(ready_inputs); mkdir -p "$r/src"; echo 'int z;' >"$r/src/z.c"
+  assert_eq block "$(dec "$(uc "$r" "GA 상태승인
+GA 아무거나")")"; assert_eq block "$(dec "$(uc "$r" 'GA 승인 입력')")"; }
 test_approval_blocked_by_fp_mismatch() { local r out
   r=$(ready_inputs); tamper_state "$r" '.x = 1'
   out=$(uc "$r" 'GA 승인 입력'); assert_eq block "$(dec "$out")"; assert_contains "$out" "GA 상태승인"; assert_eq inputs "$(sj "$r" .phase)"

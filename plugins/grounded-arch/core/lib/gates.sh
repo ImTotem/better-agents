@@ -262,7 +262,7 @@ _ga_gate_stop() {
       if [ "$ha" = true ]; then
         notice=${notice}${notice:+ }$(ga_fp_mismatch_reason)
       else
-        reasons=${reasons}${reasons:+$nl}$(ga_fp_mismatch_reason)
+        reasons=${reasons}${reasons:+$nl}"$(ga_fp_mismatch_reason). 사용자만 풀 수 있으므로 종료는 이번 한 번만 막습니다: 사용자에게 알린 뒤 종료하세요"
       fi
       ;;
     2) notice=${notice}${notice:+ }"상태 지문 기록이 없습니다(설계 상태 폴더를 ga 밖에서 바꿨는지 확인할 기준이 없음). 사용자가 docs/architecture/.state/를 확인한 뒤 \`GA 상태승인\`을 입력하면 지금 상태가 기준이 됩니다. 그 전에는 승인이 막힙니다." ;;
@@ -280,5 +280,5 @@ _ga_gate_stop() {
 _ga_effect_violation_reason() { # PHASE CHECK_JSON
   local list
   list=$(ga_effect_list "$2")
-  echo "현재 단계 ${1}에서 바뀌면 안 되는 파일이 바뀌었습니다: ${list:-(목록을 읽지 못함)}. 되돌리세요. 사용자가 직접 바꾼 파일이면 되돌리지 말고 사용자에게 알리세요"
+  echo "현재 단계 ${1}에서 바뀌면 안 되는 파일이 바뀌었습니다: ${list:-(목록을 읽지 못함)}. 에이전트가 되돌릴 수 있으므로 되돌릴 때까지 종료를 계속 막습니다. 파일을 되돌리세요. 사용자가 직접 바꾼 파일이면 되돌리지 말고 사용자에게 알리세요: 사용자가 'GA 상태승인'을 입력하면 지금 파일 상태를 받아들입니다"
 }

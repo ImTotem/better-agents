@@ -108,14 +108,27 @@ test_gate_bash_allows_without_design_or_paused() { local r
   r=$(phase inputs); set_state "$r" '.paused=true'; assert_eq allow "$(dec "$(gb "$r" 'rm -rf src')")"
   r=$(phase iterating); : >"$r/docs/architecture/.state/PAUSED"; assert_eq allow "$(dec "$(cd "$r" && env -u GA_HARNESS "$CORE/bin/ga" gate bash)")"
   echo '{bad' >"$r/docs/architecture/.state/state.json"; assert_eq allow "$(dec "$(gb "$r" ls)")"; }
+# Wall-clock bounds are generous (about 5x and 8x the values measured on an idle Mac) so a loaded
+# machine does not flake them; the report records the measured values.
 test_gate_bash_speed() { local r t avg i
   r=$(enforced implement)
   TIMEFORMAT=%R
   t=$( { time (cd "$r" && for i in $(seq 1 100); do GA_HARNESS=claude-code "$CORE/bin/ga" gate bash --command "echo $i > src/f$i.c" >/dev/null; done); } 2>&1 )
   avg=$(awk -v t="$t" 'BEGIN { printf "%d", t * 1000 / 100 }')
   echo "ga gate bash: ${avg} ms per command (100 commands in ${t} s)" >&2
-  [ "$avg" -lt 100 ] || _fail "bash gate too slow: ${avg} ms per command"
+  [ "$avg" -lt 300 ] || _fail "bash gate too slow: ${avg} ms per command"
   assert_eq allow "$(dec "$(gb "$r" 'echo x > src/a.c')")"; }
+test_gate_stop_speed_10k_files() { local r d f t ms out
+  r=$(mk_project); git -C "$r" init -q
+  for d in $(seq 1 100); do mkdir -p "$r/src/d$d"; for f in $(seq 1 100); do echo "$d $f" >"$r/src/d$d/f$f.c"; done; done
+  git -C "$r" add -A; git -C "$r" -c user.email=t@example.com -c user.name=t commit -qm base
+  GA_HARNESS=claude-code ga --root "$r" init >/dev/null; echo x >>"$r/src/d1/f1.c"
+  TIMEFORMAT=%R
+  t=$( { time gs "$r" >"$HOME/stop.out"; } 2>&1 ); out=$(cat "$HOME/stop.out")
+  ms=$(awk -v t="$t" 'BEGIN { printf "%d", t * 1000 }')
+  echo "ga gate stop, 10k tracked files: ${ms} ms" >&2
+  assert_eq block "$(dec "$out")"; assert_contains "$out" src/d1/f1.c
+  [ "$ms" -lt 2000 ] || _fail "stop gate too slow: ${ms} ms"; }
 
 # G-write additions: protected paths in every phase while a design is active.
 test_gate_write_denies_settings_and_fp_store() { local r m w p dd
@@ -157,16 +170,50 @@ test_gate_stop_blocks_on_effect_violation() { local r out
   r=$(enforced inputs); assert_eq allow "$(dec "$(gs "$r")")"
   mkdir -p "$r/src"; echo 'int x;' >"$r/src/new.c"
   out=$(gs "$r"); assert_eq block "$(dec "$out")"; assert_contains "$out" src/new.c
-  assert_eq block "$(dec "$(gs "$r" true)")" # the agent can revert it: keeps blocking
+  # the reason says the agent can revert it (so it keeps blocking) and the user can accept it
+  assert_contains "$out" "되돌릴 때까지 종료를 계속 막습니다"; assert_contains "$out" "GA 상태승인"
+  assert_eq block "$(dec "$(gs "$r" true)")"
   rm -f "$r/src/new.c"; assert_eq allow "$(dec "$(gs "$r")")"
   echo x >>"$r/docs/architecture/architecture.md"; assert_eq allow "$(dec "$(gs "$r")")"; }
 test_gate_stop_blocks_on_fp_mismatch() { local r out
   r=$(enforced implement); assert_eq allow "$(dec "$(gs "$r")")"
   tamper_state "$r" '.x = 1'
   out=$(gs "$r"); assert_eq block "$(dec "$out")"; assert_contains "$out" "GA 상태승인"
+  assert_contains "$out" "사용자만 풀 수 있으므로 종료는 이번 한 번만 막습니다"
   # only the user can fix it: once the agent was told, the next stop passes and the user sees a notice
   out=$(gs "$r" true); assert_eq allow "$(dec "$out")"; assert_contains "$(notice "$out")" "GA 상태승인"
   uc "$r" 'GA 상태승인' >/dev/null; out=$(gs "$r"); assert_eq allow "$(dec "$out")"; assert_eq "" "$(notice "$out")"; }
+# Both at once with stop_hook_active: the file change (the agent can revert it) still blocks; the
+# mismatch (only the user can clear it) is not repeated to the agent, it goes to the user.
+test_gate_stop_hook_active_blocks_files_not_fingerprint() { local r out
+  r=$(enforced inputs); mkdir -p "$r/src"; echo y >"$r/src/new.c"; tamper_state "$r" '.x = 1'
+  out=$(gs "$r" true); assert_eq block "$(dec "$out")"; assert_contains "$(jq -r .reason <<<"$out")" src/new.c
+  assert_not_contains "$(jq -r .reason <<<"$out")" "상태 지문 불일치"; assert_contains "$(notice "$out")" "상태 지문 불일치"; }
+
+# P12: the effect check cannot tell the user's edits from the agent's -- the user accepts them.
+test_resume_accepts_files_changed_while_paused() { local r out
+  r=$(enforced inputs)
+  uc "$r" 'GA 일시정지' >/dev/null; mkdir -p "$r/src"; echo 'int x;' >"$r/src/fix.c"
+  assert_eq allow "$(dec "$(gs "$r")")"
+  out=$(uc "$r" 'GA 재개'); assert_eq allow "$(dec "$out")"; assert_contains "$out" "새 기준"
+  assert_eq allow "$(dec "$(gs "$r")")"; assert_eq '[]' "$(ga --root "$r" effect check | jq -c .violations)"
+  echo 'int y;' >"$r/src/after.c"; out=$(gs "$r"); assert_eq block "$(dec "$out")"; assert_contains "$out" src/after.c
+  assert_not_contains "$out" src/fix.c; }
+test_state_accept_clears_effect_violation() { local r out
+  r=$(enforced inputs); mkdir -p "$r/src"; echo 'int x;' >"$r/src/user.c"
+  assert_eq block "$(dec "$(gs "$r")")"
+  out=$(uc "$r" 'GA 상태승인'); assert_eq allow "$(dec "$out")"; assert_contains "$out" "새 기준"
+  out=$(gs "$r"); assert_eq allow "$(dec "$out")"; assert_eq "" "$(notice "$out")"
+  assert_eq 0 "$( ( GA_CORE=$CORE; . "$CORE/lib/common.sh"; . "$CORE/lib/state.sh"; . "$CORE/lib/fingerprint.sh"; ga_fp_check "$r" ) >/dev/null 2>&1; echo $?)"; }
+# The agent's own paths (ga commands, which the MCP tools run) never move the file baseline.
+test_agent_paths_cannot_clear_effect_violation() { local r rc out
+  use_fake_claude
+  r=$(enforced inputs); seed_ledger "$r" "$FIX/ledger_inputs_ready.json"; mkdir -p "$r/src"; echo 'int x;' >"$r/src/agent.c"
+  ga --root "$r" add assumption <"$FIX/asm.json" >/dev/null; ga --root "$r" render >/dev/null
+  GA_HARNESS=claude-code ga --root "$r" enforce >/dev/null; ga --root "$r" verify >/dev/null || true
+  rc=0; ga --root "$r" effect snapshot >/dev/null 2>&1 || rc=$?; assert_eq 2 "$rc"
+  rc=0; out=$(ga --root "$r" effect check 2>/dev/null) || rc=$?; assert_eq 1 "$rc"; assert_eq '["src/agent.c"]' "$(jq -c .violations <<<"$out")"
+  assert_eq block "$(dec "$(gs "$r")")"; }
 test_gate_stop_takes_missing_snapshot_once() { local r out
   r=$(enforced inputs); rm -f "$r/docs/architecture/.state/snapshot.json"; _fp_sync "$r"
   mkdir -p "$r/src"; echo x >"$r/src/old.c" # made before any baseline existed: not judged

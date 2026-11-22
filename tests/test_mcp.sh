@@ -289,3 +289,15 @@ test_mcp_write_tools_refuse_while_state_tampered() {
   assert_eq true "$(iserr "$out" 2)"; assert_eq false "$(iserr "$out" 3)"
   assert_eq 0 "$(ledger "$r" '.items | length')"
 }
+
+# P12: only the user's GA 재개 / GA 상태승인 move the file baseline; no MCP tool does.
+test_mcp_tools_cannot_clear_effect_violation() {
+  local r out rc=0
+  r=$(mk_project); export CLAUDE_PROJECT_DIR=$r GA_HARNESS=claude-code; ga --root "$r" init >/dev/null
+  mkdir -p "$r/src"; echo 'int x;' >"$r/src/agent.c"
+  out=$(mcp "$(mcall 1 ga_add "$(add_args assumption "$FIX/asm.json")")" "$(mcall 2 ga_render '{}')" "$(mcall 3 ga_enforce '{}')" \
+            "$(mcall 4 ga_check '{}')" "$(mcall 5 ga_status '{}')")
+  for i in 1 2 3 5; do assert_eq false "$(iserr "$out" $i)"; done
+  out=$(ga --root "$r" effect check 2>/dev/null) || rc=$?
+  assert_eq 1 "$rc"; assert_eq '["src/agent.c"]' "$(jq -c .violations <<<"$out")"
+}

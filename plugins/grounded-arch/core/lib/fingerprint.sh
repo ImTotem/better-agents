@@ -62,7 +62,7 @@ ga_fp_check() { # ROOT
 }
 
 ga_fp_mismatch_reason() {
-  echo "설계 상태가 ga 밖에서 바뀌었습니다(상태 지문 불일치: docs/architecture/.state/). 사용자가 확인할 때까지 상태를 바꾸는 명령, 쓰기, 승인을 막습니다. 에이전트는 이것을 풀 수 없습니다. 사용자에게 알리세요: 사용자가 바뀐 내용을 확인한 뒤 \`GA 상태승인\`을 입력하면 지금 상태가 새 기준이 됩니다"
+  echo "설계 상태가 ga 밖에서 바뀌었습니다(상태 지문 불일치: docs/architecture/.state/). 사용자가 확인할 때까지 상태를 바꾸는 명령, 쓰기, 승인을 막습니다. 에이전트는 이것을 풀 수 없습니다. 사용자에게 알리세요: 사용자가 바뀐 내용을 확인한 뒤 \`GA 상태승인\`을 입력하면 지금 상태(상태 폴더와 프로젝트 파일)가 새 기준이 됩니다"
 }
 
 # P3: every state-writing subcommand calls this first (core/bin/ga). While the fingerprint
