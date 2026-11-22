@@ -93,6 +93,13 @@ cmd_init() {
   [ -f "$sd/approvals.jsonl" ] || : >"$sd/approvals.jsonl"
   jq -n --arg m "$mode" '{version:1,mode:$m,phase:"inputs",paused:false,round:1,iteration:0,iteration_count:0,transcript_path:null}' |
     ga_write_json "$sd/state.json"
+  # P1: OS isolation settings go in BEFORE the first snapshot, so the file is part of the baseline.
+  local esp
+  if esp=$(_ga_run_enforce "$root" 2>/dev/null); then
+    echo "격리 설정: ${esp}"
+  else
+    echo "ga: 경고: OS 격리를 설정하지 못했습니다. 셸 명령이 상태 폴더에 쓰는 것을 운영체제가 막지 못합니다 (GA_HARNESS 와 어댑터를 확인한 뒤 ga enforce 를 실행하세요)" >&2
+  fi
   ga_effect_snapshot "$root" || { ga_unlock "$root"; ga_die "ga: 파일 변경 기준을 기록하지 못했습니다" 2; }
   ga_fp_mark "$root" force   # a fresh design always gets a fresh fingerprint, even over an old record
   ga_unlock "$root"
