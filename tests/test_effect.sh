@@ -205,6 +205,21 @@ test_p29_snapshot_keeps_own_stat_record() { local r l p
   chmod 600 "$r/src/a.c"; assert_eq '[]' "$(viol "$r")"
   cp -p "$r/src/b.c" "$HOME/ref"; printf 'B\n' >"$HOME/new"; mv "$HOME/new" "$r/src/b.c"; touch -r "$HOME/ref" "$r/src/b.c"
   assert_eq '["src/b.c"]' "$(viol "$r")"; }
+# P36 (I-A): a promisor remote in the repository's own config (partial clone) must not make the
+# effect check's git fetch lazily -- that runs the remote's upload-pack command outside the sandbox.
+test_p36_no_lazy_fetch_or_transport() { local r m rc out t
+  r=$(git_proj); m=$HOME/fetch-ran
+  git -C "$r" config extensions.partialClone origin; git -C "$r" config remote.origin.url "$r"
+  git -C "$r" config remote.origin.promisor true; git -C "$r" config remote.origin.uploadpack ": >'$m'; false"
+  echo y >>"$r/src/a.c"
+  assert_eq '["src/a.c"]' "$(ga --root "$r" effect check 2>/dev/null | jq -c .violations)" # the check still works
+  t=$(git -C "$r" rev-parse HEAD:src); rm -f "$r/.git/objects/${t:0:2}/${t:2}" # an object git would fetch
+  rc=0; out=$(ga --root "$r" effect check 2>/dev/null) || rc=$?
+  [ ! -e "$m" ] || _fail "the effect check's git ran the promisor remote's command (ga effect check)"
+  assert_eq 1 "$rc"; assert_contains "$(jq -r '.violations[0]' <<<"$out")" "결과 확인 불가"
+  out=$(cd "$r" && GA_HARNESS=claude-code "$PLUGIN/adapters/claude-code/hook.sh" stop <<<"{\"cwd\":\"$r\",\"stop_hook_active\":false}")
+  [ ! -e "$m" ] || _fail "the effect check's git ran the promisor remote's command (Stop hook)"
+  assert_eq block "$(jq -r .decision <<<"$out")"; }
 test_p29_git_missing_fails_closed() { local r rc out
   load_ga; r=$(git_proj); ga_effect_snapshot "$r"
   rc=0; out=$(GA_TEST_GIT=/nonexistent/git ga --root "$r" effect check 2>/dev/null) || rc=$?

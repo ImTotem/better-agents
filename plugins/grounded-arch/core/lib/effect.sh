@@ -39,19 +39,22 @@ ga_effect_snapshot_path() { echo "$(ga_state_dir "$1")/snapshot.json"; } # ROOT
 ga_effect_list_path() { echo "$(ga_state_dir "$1")/snapshot.list"; }     # ROOT
 
 # git with nothing but the pinned repository able to steer it: no variables from the caller, no
-# system, global or attributes config, no replace objects, no optional locks, and the repository
-# settings that run programs (fsmonitor, hooks) off. GIT_DIR, GIT_COMMON_DIR and GIT_WORK_TREE come
-# from _ga_eff_layout, never from git's own reading of .git files.
+# system, global or attributes config, no replace objects, no optional locks, the repository
+# settings that run programs (fsmonitor, hooks) off, and no network or transport at all (P36: a
+# promisor remote in the repository's own config would otherwise lazily fetch a missing object and
+# run its upload-pack command): GIT_NO_LAZY_FETCH and protocol.allow=never. GIT_DIR,
+# GIT_COMMON_DIR and GIT_WORK_TREE come from _ga_eff_layout, never from git's own reading of .git files.
 _ga_git() (
   local v
   for v in $(compgen -e); do case "$v" in GIT_*) unset "$v" ;; esac; done
-  export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0
+  export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 \
+    GIT_NO_LAZY_FETCH=1
   if [ -n "${GA_EFL_GITDIR:-}" ]; then
     export GIT_DIR=$GA_EFL_GITDIR GIT_COMMON_DIR=$GA_EFL_COMMON GIT_WORK_TREE=$GA_EFL_TOP
   fi
   [ -n "$GA_GIT" ] || ga_git_resolve || exit 127
   exec "$GA_GIT" --no-pager -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.untrackedCache=false \
-    -c core.attributesFile=/dev/null "$@"
+    -c core.attributesFile=/dev/null -c protocol.allow=never "$@"
 )
 
 # P29: the git layout, found by ga itself. From ROOT up to the first .git entry: a .git folder is its
