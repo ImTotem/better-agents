@@ -208,7 +208,7 @@ better-agents/
    ├─ explain/                     # 설명 양식 전문과 알림 (훅이 넣음)
    ├─ skills/                      # SKILL.md
    │  ├─ grounding/SKILL.md
-   │  └─ design-architecture/SKILL.md
+   │  └─ arch/SKILL.md
    ├─ adapters/claude-code/        # 훅 진입점, 격리 설정
    ├─ .claude-plugin/plugin.json   # Claude Code 매니페스트
    ├─ .mcp.json
@@ -255,7 +255,7 @@ ADD 3.0의 단계 번호를 괄호로 함께 적는다.
 3. **섞임 검사:** 검증 에이전트가 입력 문서에 구조나 기술 선택이 섞여 있는지 검사한다 (5.6절 검사 항목 6).
 
 **superpowers와의 관계**
-- **호출 방식:** 아키텍처 작업은 사용자가 `/design-architecture`로 직접 호출한다.
+- **호출 방식:** 아키텍처 작업은 사용자가 `/arch`로 직접 호출한다.
 - **brainstorming과의 충돌:** superpowers 자체 규칙에 "사용자 지시(direct requests 포함)가 스킬보다 우선"이라고 되어 있다. 그래서 직접 호출하면 brainstorming이 끼어들지 않을 것으로 본다.
   - 등급: 근거 있는 가정. 간접 근거는 using-superpowers 본문이다.
   - 확인 방법: 시범 평가 때 실제로 그런지 확인한다 (6절).
@@ -536,7 +536,7 @@ ADD는 기존 시스템을 설계 입력으로 받는 방식을 지원한다. (�
 - 과금 확인 기록이 없는 실행기를 `ga`가 거부하는지 테스트한다.
 
 **2-1. 호출 충돌 확인**
-- `/design-architecture`를 직접 호출했을 때 superpowers brainstorming이 끼어들지 않는지 확인한다.
+- `/arch`를 직접 호출했을 때 superpowers brainstorming이 끼어들지 않는지 확인한다.
 - 5.3.0절의 가정을 검증하는 항목이다.
 
 **3. 공통 규칙 주입의 효과**

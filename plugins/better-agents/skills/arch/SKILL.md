@@ -1,6 +1,6 @@
 ---
-name: design-architecture
-description: 새 프로젝트나 기존 코드베이스의 아키텍처를 ADD 3.0 절차로 위에서 아래로 설계한다. 사용자가 /design-architecture로 직접 호출할 때만 쓴다. 요구사항 정리, 반복 설계, 설계 검토, 코드 뼈대, 구현까지 모든 판단에 근거를 붙이고 ga MCP 도구와 게이트로 단계를 강제한다.
+name: arch
+description: 새 프로젝트나 기존 코드베이스의 아키텍처를 ADD 3.0 절차로 위에서 아래로 설계한다. 사용자가 /arch로 직접 호출할 때만 쓴다. 요구사항 정리, 반복 설계, 설계 검토, 코드 뼈대, 구현까지 모든 판단에 근거를 붙이고 ga MCP 도구와 게이트로 단계를 강제한다.
 disable-model-invocation: true
 ---
 

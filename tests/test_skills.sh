@@ -1,11 +1,11 @@
 #!/bin/bash
 # Skills: frontmatter, grounding body == core/rules/grounding.md, and every MCP tool, `ga <sub>` and
-# `GA <verb>` the design-architecture skill mentions exists in the implementation.
+# `GA <verb>` the arch skill mentions exists in the implementation.
 # Extraction uses grep -oE '\b...' (BSD grep 2.6 and GNU grep both support \b).
 
 test_skill_frontmatter() {
   local s f
-  for s in grounding design-architecture; do
+  for s in grounding arch; do
     f="$PLUGIN/skills/$s/SKILL.md"
     assert_eq "---" "$(head -1 "$f")"
     assert_contains "$(sed -n '2,6p' "$f")" "name: $s"
@@ -16,13 +16,13 @@ test_skill_frontmatter() {
 # Explicit invocation only (spec 2, non-goal "명시적으로 호출할 때만 동작").
 test_design_skill_disables_model_invocation() {
   local fm
-  fm=$(awk 'NR==1{next} /^---$/{exit} {print}' "$PLUGIN/skills/design-architecture/SKILL.md")
+  fm=$(awk 'NR==1{next} /^---$/{exit} {print}' "$PLUGIN/skills/arch/SKILL.md")
   assert_contains "$fm" "disable-model-invocation: true"
 }
 
 # Compaction keeps only the first 5,000 tokens of a skill: the re-read instruction must sit at the top.
 test_design_skill_reread_instruction_near_top() {
-  assert_contains "$(head -15 "$PLUGIN/skills/design-architecture/SKILL.md")" '${CLAUDE_SKILL_DIR}/SKILL.md'
+  assert_contains "$(head -15 "$PLUGIN/skills/arch/SKILL.md")" '${CLAUDE_SKILL_DIR}/SKILL.md'
 }
 
 test_grounding_skill_matches_rule_source() {
@@ -39,7 +39,7 @@ test_skill_mcp_tools_exist() {
   list='{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
   names=" $(printf '%s\n%s\n' "$init" "$list" | "$CORE/mcp/server.sh" 2>/dev/null | jq -r 'select(.id == 1) | .result.tools[].name' | tr '\n' ' ') "
   assert_contains "$names" " ga_add "
-  tools=$(grep -oE 'mcp__plugin_[A-Za-z0-9_-]+__[a-z_]+' "$PLUGIN/skills/design-architecture/SKILL.md" | sort -u)
+  tools=$(grep -oE 'mcp__plugin_[A-Za-z0-9_-]+__[a-z_]+' "$PLUGIN/skills/arch/SKILL.md" | sort -u)
   # Guard against a vacuous pass (extraction finding nothing).
   assert_contains " $(echo $tools) " " mcp__plugin_better-agents_ga__ga_add "
   for t in $tools; do
@@ -51,7 +51,7 @@ test_skill_mcp_tools_exist() {
 # The shell examples left in the skill are read commands (they run inside the OS sandbox) and exist.
 test_skill_shell_ga_commands_read_only() {
   local c cmds
-  cmds=$(grep -oE '\bga [a-z-]+' "$PLUGIN/skills/design-architecture/SKILL.md" | awk '{print $2}' | sort -u)
+  cmds=$(grep -oE '\bga [a-z-]+' "$PLUGIN/skills/arch/SKILL.md" | awk '{print $2}' | sort -u)
   assert_contains " $(echo $cmds) " " status "
   for c in $cmds; do
     case " status check rule effect billing version " in *" $c "*) ;; *) _fail "state-changing or internal shell command in the skill: ga $c" ;; esac
@@ -60,14 +60,14 @@ test_skill_shell_ga_commands_read_only() {
 }
 
 test_design_skill_at_most_300_lines() {
-  local n; n=$(wc -l <"$PLUGIN/skills/design-architecture/SKILL.md" | tr -d ' ')
+  local n; n=$(wc -l <"$PLUGIN/skills/arch/SKILL.md" | tr -d ' ')
   [ "$n" -le 300 ] || _fail "SKILL.md has $n lines"
 }
 
 test_skill_user_verbs_exist() {
   local v verbs
   . "$CORE/lib/usercmd.sh"
-  verbs=$(grep -oE '\bGA [^ `.]+' "$PLUGIN/skills/design-architecture/SKILL.md" | awk '{print $2}' | sort -u)
+  verbs=$(grep -oE '\bGA [^ `.]+' "$PLUGIN/skills/arch/SKILL.md" | awk '{print $2}' | sort -u)
   # Guard against a vacuous pass (extraction finding nothing).
   assert_contains " $(echo $verbs) " " 승인 "
   for v in $verbs; do
