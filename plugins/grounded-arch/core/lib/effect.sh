@@ -113,26 +113,29 @@ _ga_eff_stat() {
 
 # Git projects: the candidate files, relative to ROOT, in T/cand -- every file at the base commit,
 # every index entry, every untracked file that is not ignored (only .gitignore files are honored, not
-# the agent-writable .git/info/exclude or the global excludes), and every .gitignore file on disk --
-# minus the state folder and the OS metadata names. Also T/base ("BLOB PATH" at the base commit).
-# rc 2 with the reason on stdout.
+# the agent-writable .git/info/exclude or the global excludes), and every .gitignore file git reads,
+# ignored or not -- minus the state folder and the OS metadata names. Also T/base ("BLOB PATH" at the
+# base commit). P34: the .gitignore files come from git's own listing, not from walking the tree:
+# tracked ones are in the base tree and the index, the others in the untracked listing, and those
+# that ignore themselves in the ignored listing (--directory: git does not enter a folder a parent
+# .gitignore ignores, and a .gitignore in there cannot change what git lists). rc 2 with the reason.
 _ga_eff_git_cands() { # ROOT BASE T
   local root=$1 base=$2 t=$3
   : >"$t/lt.z"
   if ! ( cd "$root" || exit 2
          if [ -n "$base" ]; then _ga_git ls-tree -r -z "$base" >"$t/lt.z" || exit 2; fi
          _ga_git ls-files -z >"$t/idx.z" &&
-           _ga_git ls-files -z -o --exclude-per-directory=.gitignore >"$t/oth.z" ) 2>"$t/err"; then
+           _ga_git ls-files -z -o --exclude-per-directory=.gitignore >"$t/oth.z" &&
+           _ga_git ls-files -z -o -i --directory --exclude-per-directory=.gitignore >"$t/ign.z" ) 2>"$t/err"; then
     echo "git 오류: $(head -n 1 "$t/err")"
     return 2
   fi
-  ( cd "$root" && find . -name .git -prune -o -name .gitignore -print0 ) >"$t/gi.z" 2>/dev/null || :
   LC_ALL=C tr '\n\0' "${GA_EFF_NL}\n" <"$t/lt.z" |
     LC_ALL=C awk '{ i = index($0, "\t"); split(substr($0, 1, i - 1), m, " "); print m[3] " " substr($0, i + 1) }' >"$t/base"
   { LC_ALL=C cut -d ' ' -f 2- "$t/base"
     LC_ALL=C tr '\n\0' "${GA_EFF_NL}\n" <"$t/idx.z"
     LC_ALL=C tr '\n\0' "${GA_EFF_NL}\n" <"$t/oth.z"
-    LC_ALL=C tr '\n\0' "${GA_EFF_NL}\n" <"$t/gi.z" | LC_ALL=C sed 's#^\./##'
+    LC_ALL=C tr '\n\0' "${GA_EFF_NL}\n" <"$t/ign.z" | { LC_ALL=C grep -E '(^|/)\.gitignore$' || :; }
   } | _ga_eff_filter >"$t/cand"
   return 0
 }

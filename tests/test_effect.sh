@@ -167,7 +167,23 @@ test_p29_forged_index_entry_still_a_change() { local r base ed hex body sum
 test_p29_gitignore_change_is_a_change() { local r
   load_ga; r=$(git_proj greenfield inputs); ga_effect_snapshot "$r"
   printf '*\n' >"$r/src/.gitignore"; echo x >"$r/src/new.c"
-  assert_contains "$(viol "$r")" '"src/.gitignore"'; }
+  assert_contains "$(viol "$r")" '"src/.gitignore"'
+  # P34 (follow-up): found through git's own listing, also in a new folder and a new nested folder
+  mkdir -p "$r/foo" "$r/bar/baz"; printf '*\n' >"$r/foo/.gitignore"; echo e >"$r/foo/evil.c"
+  printf '*\n' >"$r/bar/baz/.gitignore"; echo e >"$r/bar/baz/x.c"
+  assert_contains "$(viol "$r")" '"bar/baz/.gitignore"'; assert_contains "$(viol "$r")" '"foo/.gitignore"'; }
+# P34 (follow-up): a folder ignored by a committed .gitignore is never walked: 50k files in it keep Stop
+# under 2 s (and a .gitignore inside it is not a change -- git never reads it).
+test_p34_large_ignored_folder_keeps_stop_fast() { local r i t0 t1 out
+  load_ga; r=$(git_proj); echo 'node_modules/' >"$r/.gitignore"; git -C "$r" add .gitignore; git -C "$r" commit -qm ign
+  i=0; while [ $i -lt 500 ]; do mkdir -p "$r/node_modules/d$i"; i=$((i + 1)); done
+  i=0; while [ $i -lt 500 ]; do printf "$r/node_modules/d$i/f%s.js\n" $(seq 1 100); i=$((i + 1)); done | tr '\n' '\0' | xargs -0 touch
+  echo '*.log' >"$r/node_modules/.gitignore"
+  ga_effect_snapshot "$r"; echo z >"$r/src/a.c"; echo q >"$r/node_modules/d1/f1.js"; echo '*' >"$r/node_modules/.gitignore"
+  t0=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000'); out=$(cd "$r" && GA_HARNESS=claude-code ga gate stop --hook-active false)
+  t1=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000'); echo "  Stop with 50k ignored files: $((t1 - t0)) ms" >&2
+  assert_eq block "$(jq -r .decision <<<"$out")"; assert_contains "$out" src/a.c; assert_not_contains "$out" node_modules
+  [ $((t1 - t0)) -lt 2000 ] || _fail "Stop too slow: $((t1 - t0)) ms"; }
 # The git layout is pinned: a commondir file in a main .git, or a .git file that is not a normal linked
 # worktree, cannot be trusted; a normal linked worktree works.
 test_p29_layout_is_pinned() { local r w rc out
