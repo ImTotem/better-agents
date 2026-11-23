@@ -161,7 +161,7 @@ _ga_gate_write() {
   if [ -n "$root$sroot" ]; then
     plug=$(_ga_plugin_root)
     if [ -n "$plug" ] && _ga_under "$plug" "$c"; then
-      _ga_gate_out deny "설계가 있는 동안(일시정지 중에도) grounded-arch 플러그인 파일($plug)은 고칠 수 없습니다. 플러그인을 고쳐야 하면 사용자에게 직접 고쳐 달라고 요청하세요"
+      _ga_gate_out deny "설계가 있는 동안(일시정지 중에도) better-agents 플러그인 파일($plug)은 고칠 수 없습니다. 플러그인을 고쳐야 하면 사용자에게 직접 고쳐 달라고 요청하세요"
       return 0
     fi
     # The harness adapter names its settings files (0 = a settings file with the isolation settings).

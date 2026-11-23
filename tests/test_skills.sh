@@ -41,10 +41,10 @@ test_skill_mcp_tools_exist() {
   assert_contains "$names" " ga_add "
   tools=$(grep -oE 'mcp__plugin_[A-Za-z0-9_-]+__[a-z_]+' "$PLUGIN/skills/design-architecture/SKILL.md" | sort -u)
   # Guard against a vacuous pass (extraction finding nothing).
-  assert_contains " $(echo $tools) " " mcp__plugin_grounded-arch_ga__ga_add "
+  assert_contains " $(echo $tools) " " mcp__plugin_better-agents_ga__ga_add "
   for t in $tools; do
-    case "$t" in mcp__plugin_grounded-arch_ga__*) ;; *) _fail "wrong plugin or server prefix: $t" ;; esac
-    assert_contains "$names" " ${t#mcp__plugin_grounded-arch_ga__} "
+    case "$t" in mcp__plugin_better-agents_ga__*) ;; *) _fail "wrong plugin or server prefix: $t" ;; esac
+    assert_contains "$names" " ${t#mcp__plugin_better-agents_ga__} "
   done
 }
 

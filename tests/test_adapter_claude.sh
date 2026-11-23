@@ -37,7 +37,8 @@ test_bin_ga_wrapper_follows_symlink() { d=$(mktemp -d); ln -s "$PLUGIN/bin/ga" "
 test_hooks_json_registers_command_hooks() {
   f=$PLUGIN/hooks/hooks.json
   assert_eq 0 "$(jq '[.hooks[][].hooks[].type] | map(select(. != "command")) | length' "$f")"
-  assert_eq 5 "$(jq '[.hooks[][]] | length' "$f")"
+  assert_eq 5 "$(jq '[.hooks[][].hooks[].command | select(test("/adapters/claude-code/hook.sh"))] | length' "$f")"
+  assert_eq 7 "$(jq '[.hooks[][]] | length' "$f")" # + the two explain hooks (SessionStart, UserPromptSubmit)
   assert_eq "Bash|PowerShell|Monitor,Write|Edit|MultiEdit|NotebookEdit" "$(jq -r '[.hooks.PreToolUse[].matcher] | sort | join(",")' "$f")"
   assert_contains "$(jq -r '.hooks.Stop[0].hooks[0].command' "$f")" '${CLAUDE_PLUGIN_ROOT}/adapters/claude-code/hook.sh'; }
 

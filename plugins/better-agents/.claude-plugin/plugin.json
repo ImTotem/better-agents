@@ -1,0 +1,15 @@
+{
+  "name": "better-agents",
+  "version": "0.1.0",
+  "description": "AI 코딩 에이전트가 일을 제대로 하게 돕는 플러그인: 근거 기반 아키텍처 설계(원장, 단계 게이트, 여러 모델 검증)와 설명 양식",
+  "author": {
+    "name": "sungbin"
+  },
+  "keywords": [
+    "architecture",
+    "design",
+    "grounding",
+    "explanation",
+    "agents"
+  ]
+}

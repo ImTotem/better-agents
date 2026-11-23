@@ -1,6 +1,6 @@
-# explain-clearly
+# 설명 양식 (explain)
 
-Claude가 사용자에게 승인이나 방향 선택을 물을 때 늘 같은 양식으로 쓰게 하는 플러그인입니다. 그 밖의 글(진행 상황, 정할 일 없는 결과, 짧은 답)은 양식 없이 짧게 씁니다(2026-11-22 사용자).
+better-agents 플러그인의 한 부분입니다. Claude가 사용자에게 승인이나 방향 선택을 물을 때 늘 같은 양식으로 쓰게 합니다. 그 밖의 글(진행 상황, 정할 일 없는 결과, 짧은 답)은 양식 없이 짧게 씁니다(2026-11-22 사용자).
 
 ## 하는 일
 
@@ -26,8 +26,8 @@ Claude가 사용자에게 승인이나 방향 선택을 물을 때 늘 같은 �
   - https://code.claude.com/docs/en/hooks
   - https://code.claude.com/docs/en/plugins-reference
 
-## 설치와 끄기
+## 설치와 바꾸기
 
-- 설치: `claude plugin marketplace add <이 저장소 경로>` 다음 `claude plugin install explain-clearly@better-agents`
-- 끄기: `claude plugin disable explain-clearly@better-agents`
-- 양식 바꾸기: `rules/guide.md`와 `rules/reminder.md`를 고칩니다. 둘의 순서와 이름표를 같게 유지합니다.
+- 설치: better-agents 플러그인을 설치하면 함께 켜집니다(저장소 맨 위 `README.md`).
+- 훅: `hooks/hooks.json`의 SessionStart와 UserPromptSubmit에 아키텍처 설계 훅과 나란히 들어 있습니다.
+- 양식 바꾸기: `explain/guide.md`와 `explain/reminder.md`를 고칩니다. 둘의 순서와 이름표를 같게 유지합니다.

@@ -192,25 +192,28 @@
   - (가정) pstack이 Codex, Copilot, OpenCode용 훅 파일을 가지고 있으므로 이 하네스들에도 훅 기능이 있을 것으로 본다. 어댑터를 만들 때 확인한다.
 
 ### 5.1 패키지 구조
-ai-tools 저장소를 Claude Code 플러그인 마켓플레이스로 만든다. (확인: Plugins 레퍼런스 "Standard layout")
+저장소 `better-agents`(GitHub ImTotem/better-agents)를 Claude Code 플러그인 마켓플레이스로 만들고, 플러그인은 **`better-agents` 하나**만 둔다. 아키텍처 설계, 설명 양식, 이후 도구(디자인 시스템 등)는 모두 이 플러그인 안의 스킬과 훅으로 들어간다. (사용자 2026-11-23: "pstack처럼 하나로 통합". 확인: pstack-claude의 marketplace.json은 플러그인 `pstack` 하나만 두고 스킬 60여 개와 하네스별 설정을 `plugins/pstack/` 안에 넣는다) (확인: Plugins 레퍼런스 "Standard layout")
 - 코어도 플러그인 디렉터리 **안**에 둔다. 플러그인 설치 시 그 디렉터리가 복사되므로, 밖에 두면 어댑터가 코어를 찾지 못한다. (판단)
-- 같은 이유로 pstack도 모든 것을 `plugins/pstack/` 하나에 넣었다. (확인)
+- 아키텍처 설계 기능의 내부 이름은 `grounded-arch`로 남는다(데이터 폴더 `~/.local/state/grounded-arch`, 메시지 머리말). MCP 도구 이름은 `mcp__plugin_better-agents_ga__<도구>`다.
 
 ```
-ai-tools/
-├─ .claude-plugin/marketplace.json
-└─ plugins/grounded-arch/
-   ├─ core/                        # 하네스 무관
+better-agents/
+├─ .claude-plugin/marketplace.json  # 플러그인 하나: better-agents
+└─ plugins/better-agents/
+   ├─ core/                        # 하네스 무관 (아키텍처 설계)
    │  ├─ rules/grounding.md        # 공통 근거 규칙 원문 (단일 원본)
-   │  ├─ schema/                   # 상태, 원장, 검증 보고 스키마
-   │  ├─ bin/ga                    # 코어 CLI: 상태 전환, 형식 검사, 게이트 판정, 검증 실행
+   │  ├─ lib/, bin/ga              # 코어 CLI: 상태 전환, 형식 검사, 게이트 판정, 검증 실행
+   │  ├─ mcp/server.sh             # 에이전트가 상태를 바꾸는 MCP 도구
    │  └─ verifier/                 # 검증 프롬프트, 입출력 규약, 실행기(runner)
+   ├─ explain/                     # 설명 양식 전문과 알림 (훅이 넣음)
    ├─ skills/                      # SKILL.md
    │  ├─ grounding/SKILL.md
    │  └─ design-architecture/SKILL.md
-   ├─ .claude-plugin/plugin.json   # Claude Code 어댑터
-   ├─ hooks/hooks.json             # Claude Code 어댑터: 이벤트마다 core/bin/ga 호출만 함
-   └─ (이후) .codex-plugin/, opencode/ 등 다른 하네스 어댑터
+   ├─ adapters/claude-code/        # 훅 진입점, 격리 설정
+   ├─ .claude-plugin/plugin.json   # Claude Code 매니페스트
+   ├─ .mcp.json
+   ├─ hooks/hooks.json             # Claude Code 훅: 설계 게이트와 설명 양식
+   └─ (이후) .codex-plugin/, opencode/ 등 다른 하네스 매니페스트와 어댑터
 ```
 
 ### 5.2 공통 근거 규칙 주입

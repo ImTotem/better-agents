@@ -10,7 +10,7 @@ disable-model-invocation: true
 
 코드를 쓰기 전에 아키텍처를 위에서 아래로 설계한다. 단계는 `inputs` → `iterating`(반복 1..N) → `design-review` → `skeleton` → `implement`다. 문서는 `docs/architecture/architecture.md` 하나다. 원장과 단계는 `docs/architecture/.state/`에 있고 `ga`만 쓴다.
 
-**상태를 바꾸는 일은 MCP 도구로만 한다.** 플러그인의 MCP 서버 `ga`가 도구를 준다. 전체 이름은 `mcp__plugin_grounded-arch_ga__<도구>`이고(예: `mcp__plugin_grounded-arch_ga__ga_add`), 이 문서에서는 `ga_add`처럼 줄여 쓴다. 셸(Bash)은 운영체제 격리 안에서 돌아서 상태 폴더에 쓰지 못한다. 셸에서는 읽기 명령(`ga status`, `ga check`, `ga rule`, `ga effect check`)만 쓴다.
+**상태를 바꾸는 일은 MCP 도구로만 한다.** 플러그인의 MCP 서버 `ga`가 도구를 준다. 전체 이름은 `mcp__plugin_better-agents_ga__<도구>`이고(예: `mcp__plugin_better-agents_ga__ga_add`), 이 문서에서는 `ga_add`처럼 줄여 쓴다. 셸(Bash)은 운영체제 격리 안에서 돌아서 상태 폴더에 쓰지 못한다. 셸에서는 읽기 명령(`ga status`, `ga check`, `ga rule`, `ga effect check`)만 쓴다.
 
 ## 0. 원칙
 
@@ -209,15 +209,15 @@ disable-model-invocation: true
 
 | 도구 | 인자 | 하는 일 |
 |---|---|---|
-| `mcp__plugin_grounded-arch_ga__ga_init` | `mode`(선택) | 설계 시작. 모드와 근거, 격리 설정 경로를 출력 |
-| `mcp__plugin_grounded-arch_ga__ga_add` | `kind`, `item` | 항목 추가. 종료 3은 규칙 위반 |
-| `mcp__plugin_grounded-arch_ga__ga_update` | `id`, `patch` | 항목 내용 수정 |
-| `mcp__plugin_grounded-arch_ga__ga_ask` | `id` | 질문을 물은 상태(asked)로 |
-| `mcp__plugin_grounded-arch_ga__ga_resolve` | `id`, `source_type`, `ref` | 직접 근거(code, literature, measurement)로 가정이나 질문을 해결. 결정에는 못 씀 |
-| `mcp__plugin_grounded-arch_ga__ga_render` | 없음 | 원장을 architecture.md의 ga 블록에 반영 |
-| `mcp__plugin_grounded-arch_ga__ga_verify` | 없음 | 검증 패널 실행, 보고서 작성. 종료 4는 과금 점검 실패, 5는 일부 모델 실패 |
-| `mcp__plugin_grounded-arch_ga__ga_dispute` | `id`, `evidence` | 지적에 증거를 붙여 반박 |
-| `mcp__plugin_grounded-arch_ga__ga_enforce` | 없음 | 격리 설정을 다시 설치(셸이 "격리가 꺼져 있어" 막힐 때) |
+| `mcp__plugin_better-agents_ga__ga_init` | `mode`(선택) | 설계 시작. 모드와 근거, 격리 설정 경로를 출력 |
+| `mcp__plugin_better-agents_ga__ga_add` | `kind`, `item` | 항목 추가. 종료 3은 규칙 위반 |
+| `mcp__plugin_better-agents_ga__ga_update` | `id`, `patch` | 항목 내용 수정 |
+| `mcp__plugin_better-agents_ga__ga_ask` | `id` | 질문을 물은 상태(asked)로 |
+| `mcp__plugin_better-agents_ga__ga_resolve` | `id`, `source_type`, `ref` | 직접 근거(code, literature, measurement)로 가정이나 질문을 해결. 결정에는 못 씀 |
+| `mcp__plugin_better-agents_ga__ga_render` | 없음 | 원장을 architecture.md의 ga 블록에 반영 |
+| `mcp__plugin_better-agents_ga__ga_verify` | 없음 | 검증 패널 실행, 보고서 작성. 종료 4는 과금 점검 실패, 5는 일부 모델 실패 |
+| `mcp__plugin_better-agents_ga__ga_dispute` | `id`, `evidence` | 지적에 증거를 붙여 반박 |
+| `mcp__plugin_better-agents_ga__ga_enforce` | 없음 | 격리 설정을 다시 설치(셸이 "격리가 꺼져 있어" 막힐 때) |
 
 같은 서버의 `ga_status`, `ga_check`, `ga_rule`은 아래 셸 명령과 같다.
 

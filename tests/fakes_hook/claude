@@ -5,7 +5,7 @@
 # --settings/--strict-mcp-config (worst case: the harness did not disable hooks).
 # FAKE_HOOK_LOG (optional): one line per fired hook with the hook's output.
 here=$(cd -P "$(dirname "$0")" && pwd)
-H=$here/../../plugins/grounded-arch/adapters/claude-code/hook.sh
+H=$here/../../plugins/better-agents/adapters/claude-code/hook.sh
 if [ "$1" = auth ] && [ "$2" = status ]; then echo '{"authMethod":"claude.ai"}'; exit 0; fi
 prompt=""; model=""; prev=""
 for a in "$@"; do

@@ -1,6 +1,6 @@
 # Test helpers. Sourced by tests/run.sh. bash 3.2 compatible.
 REPO=$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-PLUGIN=$REPO/plugins/grounded-arch
+PLUGIN=$REPO/plugins/better-agents
 CORE=$PLUGIN/core
 FIX=$REPO/tests/fixtures
 

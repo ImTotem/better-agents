@@ -3,18 +3,12 @@
   "owner": {
     "name": "sungbin"
   },
-  "description": "AI 코딩 에이전트가 일을 제대로 하게 돕는 플러그인 모음",
+  "description": "AI 코딩 에이전트가 일을 제대로 하게 돕는 도구 모음",
   "plugins": [
     {
-      "name": "grounded-arch",
-      "source": "./plugins/grounded-arch",
-      "description": "근거 기반 아키텍처 설계 플러그인: 설계 단계 게이트, 근거 원장, 여러 모델 검증",
-      "version": "0.1.0"
-    },
-    {
-      "name": "explain-clearly",
-      "source": "./plugins/explain-clearly",
-      "description": "사용자에게 하는 설명을 늘 같은 양식으로 쓰게 하는 훅",
+      "name": "better-agents",
+      "source": "./plugins/better-agents",
+      "description": "근거 기반 아키텍처 설계와 설명 양식을 한 플러그인에 담았다",
       "version": "0.1.0"
     }
   ]
