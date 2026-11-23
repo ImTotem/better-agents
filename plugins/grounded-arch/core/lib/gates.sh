@@ -114,18 +114,6 @@ _ga_state_component_root() { # C
   done
 }
 
-# P20: true when canonical C is git configuration or a git hook (anything git runs outside the
-# sandbox): .git/**/config, .git/**/config.worktree, .git/**/hooks/** (case-folded).
-_ga_git_exec_path() { # C
-  local lc
-  lc=$(printf '%s' "$1" | LC_ALL=C tr 'A-Z' 'a-z')
-  case "$lc" in
-    */.git/config | */.git/*/config | */.git/config.worktree | */.git/*/config.worktree) return 0 ;;
-    */.git/hooks | */.git/hooks/* | */.git/*/hooks | */.git/*/hooks/*) return 0 ;;
-  esac
-  return 1
-}
-
 _ga_gate_write() {
   local p="" root sroot sdir d c plug fpd t n=0 sr kind dr
   while [ $# -gt 0 ]; do
@@ -166,29 +154,20 @@ _ga_gate_write() {
     return 0
   fi
 
-  # 2. While a design exists for the path or the session, paused or not (P21, P30): the plugin
-  #    (R34d), what runs outside the sandbox (git config and hooks; the harness's files: .mcp.json,
-  #    hook scripts, ~/.claude.json, its plugins) and the harness's settings files. Without a design
-  #    the plugin changes nothing (spec 2).
+  # 2. While a design exists for the path or the session, paused or not (P21): the plugin (R34d) and
+  #    the harness's settings files -- what turns the gates off. P39: ordinary files that something
+  #    runs later (.git/hooks, .mcp.json, hook scripts, other plugins) are not guarded (spec 5.5
+  #    "방어 대상"). Without a design the plugin changes nothing (spec 2).
   if [ -n "$root$sroot" ]; then
     plug=$(_ga_plugin_root)
     if [ -n "$plug" ] && _ga_under "$plug" "$c"; then
       _ga_gate_out deny "설계가 있는 동안(일시정지 중에도) grounded-arch 플러그인 파일($plug)은 고칠 수 없습니다. 플러그인을 고쳐야 하면 사용자에게 직접 고쳐 달라고 요청하세요"
       return 0
     fi
-    if _ga_git_exec_path "$c"; then
-      _ga_gate_out deny "설계가 있는 동안(일시정지 중에도) git 설정과 훅($c)은 격리 밖의 git이 실행하므로 쓰기 도구로 고칠 수 없습니다. 바꿔야 하면 사용자에게 직접 고쳐 달라고 요청하세요"
-      return 0
-    fi
-    # The harness adapter names its own files: 3 = a file the harness runs outside the sandbox,
-    # 0 = a settings file with the isolation settings.
+    # The harness adapter names its settings files (0 = a settings file with the isolation settings).
     dr=${root:-$sroot}
     ga_enforce_protects "$dr" "$c"
     kind=$?
-    if [ "$kind" = 3 ]; then
-      _ga_gate_out deny "설계가 있는 동안(일시정지 중에도) 하네스가 격리 밖에서 실행하는 파일($c)은 쓰기 도구로 고칠 수 없습니다. 바꿔야 하면 사용자에게 직접 고쳐 달라고 요청하세요"
-      return 0
-    fi
     if [ "$kind" != 1 ]; then
       _ga_gate_out deny "설계가 있는 동안(일시정지 중에도) 하네스 설정 파일($c)은 고칠 수 없습니다(OS 격리 설정이 들어 있습니다). 격리 설정은 MCP 도구 \`ga_enforce\`가 씁니다. 다른 설정을 바꿔야 하면 사용자에게 직접 고쳐 달라고 요청하세요"
       return 0

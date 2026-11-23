@@ -220,6 +220,18 @@ test_p36_no_lazy_fetch_or_transport() { local r m rc out t
   out=$(cd "$r" && GA_HARNESS=claude-code "$PLUGIN/adapters/claude-code/hook.sh" stop <<<"{\"cwd\":\"$r\",\"stop_hook_active\":false}")
   [ ! -e "$m" ] || _fail "the effect check's git ran the promisor remote's command (Stop hook)"
   assert_eq block "$(jq -r .decision <<<"$out")"; }
+# P40 (follow-up 3): the user's global excludes file is honored as patterns: IDE files listed there are
+# not changes in a design phase. core.excludesFile from the global config wins over the default
+# ~/.config/git/ignore; .git/info/exclude stays untrusted; a .gitignore change is still a change.
+test_p40_global_excludes_honored_as_patterns() { local r
+  load_ga; r=$(git_proj greenfield inputs); ga_effect_snapshot "$r"
+  mkdir -p "$HOME/.config/git" "$r/.idea"; printf '.idea/\n' >"$HOME/.config/git/ignore"
+  echo x >"$r/.idea/workspace.xml"; echo n >"$r/src/new.c"
+  assert_eq '["src/new.c"]' "$(viol "$r")"
+  printf '[core]\n\texcludesFile = ~/my-ignore\n' >"$HOME/.gitconfig"; printf '*.swp\n' >"$HOME/my-ignore"
+  echo s >"$r/src/a.c.swp"; assert_eq '[".idea/workspace.xml","src/new.c"]' "$(viol "$r")"
+  echo 'src/new.c' >>"$r/.git/info/exclude"; assert_contains "$(viol "$r")" '"src/new.c"'
+  printf '*\n' >"$r/src/.gitignore"; assert_contains "$(viol "$r")" '"src/.gitignore"'; }
 test_p29_git_missing_fails_closed() { local r rc out
   load_ga; r=$(git_proj); ga_effect_snapshot "$r"
   rc=0; out=$(GA_TEST_GIT=/nonexistent/git ga --root "$r" effect check 2>/dev/null) || rc=$?

@@ -176,17 +176,24 @@ test_p16_build_check_skipped_without_isolation() { local r out
   assert_contains "$(argval "$FAKE_ARGV_DUMP" -p)" "격리 실행 도구 없음"
   out=$(uc "$r" 'GA 승인 뼈대'); assert_eq block "$(jq -r .decision <<<"$out")"; assert_contains "$out" "격리"; }
 
-# --- second fix wave (P27, P28) ---
-# P27: the build runs with the user's PATH and a temp folder of its own (removed afterwards), and it
-# cannot plant a program in a PATH folder of the home directory.
-test_p27_build_gets_user_path_and_its_own_temp() { local r d t
+# --- second fix wave (P28) and follow-up 3 (P38) ---
+# P38: the build runs with the user's PATH and a temp folder of its own (removed afterwards); ordinary
+# writes such as home caches work; the state folder, the settings files and the plugin folder do not.
+test_p38_build_writes_caches_not_gate_files() { local r d t sd pp
   [ -x /usr/bin/sandbox-exec ] || command -v bwrap >/dev/null 2>&1 || return 0
-  use_fake_claude; r=$(c1_skel); d=$(mktemp -d); mkdir -p "$HOME/.local/bin"
-  printf '#!/bin/sh\necho mytool-ran\n' >"$d/mytool"; chmod +x "$d/mytool"
-  printf '%s\n' 'mytool >tool.txt' 'echo "$TMPDIR" >tmp.txt' 'echo x >"$TMPDIR/scratch"' 'echo x >"$HOME/.local/bin/planted" 2>/dev/null || true' 'exit 0' >"$r/test.sh"
+  use_fake_claude; r=$(c1_skel); sd=$r/docs/architecture/.state; d=$(mktemp -d); pp=$(cd -P "$PLUGIN" && pwd -P)/.ga-p38-probe
+  printf '#!/bin/sh\necho mytool-ran\n' >"$d/mytool"; chmod +x "$d/mytool"; mkdir -p "$r/.claude"; echo '{}' >"$r/.claude/settings.local.json"
+  cp "$sd/state.json" "$HOME/s0"; cp "$r/.claude/settings.local.json" "$HOME/l0"
+  printf '%s\n' 'mytool >tool.txt' 'echo "$TMPDIR" >tmp.txt' 'echo x >"$TMPDIR/scratch"' \
+    'mkdir -p "$HOME/.cache" "$HOME/.npm" && echo c >"$HOME/.cache/x" && echo n >"$HOME/.npm/x"' \
+    'echo h >docs/architecture/.state/state.json 2>/dev/null || true' 'echo h >.claude/settings.local.json 2>/dev/null || true' \
+    "echo p >'$pp' 2>/dev/null || true" 'exit 0' >"$r/test.sh"
   PATH="$d:$PATH" GA_HARNESS=claude-code ga --root "$r" verify >/dev/null
+  [ ! -e "$pp" ] || { rm -f "$pp"; _fail "the build wrote the plugin folder"; }
   assert_eq mytool-ran "$(cat "$r/tool.txt")"; assert_eq 0 "$(rep "$r" '.build_check.exit')"
-  [ ! -e "$HOME/.local/bin/planted" ] || _fail "the build planted a program in a PATH folder of the home directory"
+  assert_eq c "$(cat "$HOME/.cache/x")"; assert_eq n "$(cat "$HOME/.npm/x")"
+  cmp -s "$sd/state.json" "$HOME/s0" || _fail "the build wrote the state folder"
+  cmp -s "$r/.claude/settings.local.json" "$HOME/l0" || _fail "the build wrote the settings file"
   t=$(cat "$r/tmp.txt"); [ -n "$t" ] || _fail "no TMPDIR in the build"
   [ "$t" != "${TMPDIR:-/tmp}" ] && [ ! -e "$t" ] || _fail "the build used the user's TMPDIR or its temp folder was left: $t"; }
 # P28: ga verify runs only system tools outside the sandbox (the runner and its preflight come from the

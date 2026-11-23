@@ -4,8 +4,9 @@
 # here (the state fingerprint covers them).
 # This runs outside the OS sandbox (Stop hook, approvals), so it trusts nothing the agent can write
 # (spec 5.5 "격리 밖에서 도는 코드의 원칙", rule 3, P29). git only lists files and hashes contents as
-# they are: ga pins the git layout itself, git runs with no global, system or attributes config and
-# with the repository settings that run programs turned off, there is no worktree `git diff` (it runs
+# they are: ga pins the git layout itself, git runs with no global, system or attributes config (the global
+# excludes file is read as patterns only, P40) and with the repository settings that run programs
+# turned off and no fetch or transport (P36), there is no worktree `git diff` (it runs
 # filters) and the index stat cache is never used. ga compares contents itself, with its own stat
 # record (size, mtime, ctime, inode). Anything it cannot check is a violation ("결과 확인 불가: ..."),
 # never "no changes". File names are filtered in the C locale (P32).
@@ -115,21 +116,24 @@ _ga_eff_stat() {
 }
 
 # Git projects: the candidate files, relative to ROOT, in T/cand -- every file at the base commit,
-# every index entry, every untracked file that is not ignored (only .gitignore files are honored, not
-# the agent-writable .git/info/exclude or the global excludes), and every .gitignore file git reads,
+# every index entry, every untracked file that is not ignored (the .gitignore files and the user's global
+# excludes file, P40; not the agent-writable .git/info/exclude), and every .gitignore file git reads,
 # ignored or not -- minus the state folder and the OS metadata names. Also T/base ("BLOB PATH" at the
 # base commit). P34: the .gitignore files come from git's own listing, not from walking the tree:
 # tracked ones are in the base tree and the index, the others in the untracked listing, and those
 # that ignore themselves in the ignored listing (--directory: git does not enter a folder a parent
 # .gitignore ignores, and a .gitignore in there cannot change what git lists). rc 2 with the reason.
 _ga_eff_git_cands() { # ROOT BASE T
-  local root=$1 base=$2 t=$3
+  local root=$1 base=$2 t=$3 gx
+  local -a xf=()
+  # P40: the user's global excludes file, as patterns (IDE and editor files are not changes).
+  if gx=$(_ga_eff_global_excludes); then xf=(--exclude-from="$gx"); fi
   : >"$t/lt.z"
   if ! ( cd "$root" || exit 2
          if [ -n "$base" ]; then _ga_git ls-tree -r -z "$base" >"$t/lt.z" || exit 2; fi
          _ga_git ls-files -z >"$t/idx.z" &&
-           _ga_git ls-files -z -o --exclude-per-directory=.gitignore >"$t/oth.z" &&
-           _ga_git ls-files -z -o -i --directory --exclude-per-directory=.gitignore >"$t/ign.z" ) 2>"$t/err"; then
+           _ga_git ls-files -z -o --exclude-per-directory=.gitignore ${xf[@]+"${xf[@]}"} >"$t/oth.z" &&
+           _ga_git ls-files -z -o -i --directory --exclude-per-directory=.gitignore ${xf[@]+"${xf[@]}"} >"$t/ign.z" ) 2>"$t/err"; then
     echo "git 오류: $(head -n 1 "$t/err")"
     return 2
   fi
@@ -141,6 +145,23 @@ _ga_eff_git_cands() { # ROOT BASE T
     LC_ALL=C tr '\n\0' "${GA_EFF_NL}\n" <"$t/ign.z" | { LC_ALL=C grep -E '(^|/)\.gitignore$' || :; }
   } | _ga_eff_filter >"$t/cand"
   return 0
+}
+
+# P40: the user's global git excludes file, read as patterns only: core.excludesFile from the global
+# config files (a plain --file read: no includes, nothing runs; "~/" expanded), else
+# ${XDG_CONFIG_HOME:-$HOME/.config}/git/ignore. Prints it when it is a readable file with an absolute
+# path; rc 1 otherwise. (.git/info/exclude stays untrusted: the agent's shell can write it.)
+_ga_eff_global_excludes() {
+  local x=${XDG_CONFIG_HOME:-$HOME/.config} f v p=""
+  for f in "$x/git/config" "$HOME/.gitconfig"; do # git reads both; ~/.gitconfig wins
+    [ -f "$f" ] || continue
+    v=$(_ga_git config --file "$f" --path --get core.excludesFile 2>/dev/null) || v=""
+    [ -z "$v" ] || p=$v
+  done
+  [ -n "$p" ] || p=$x/git/ignore
+  case "$p" in /*) ;; *) return 1 ;; esac
+  [ -f "$p" ] && [ -r "$p" ] || return 1
+  printf '%s\n' "$p"
 }
 
 # Fails (rc 2, the reason on stdout) when a name in FILE holds a newline: lines cannot name it.

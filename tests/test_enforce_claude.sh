@@ -272,31 +272,33 @@ test_enforce_exec_protects_state_and_parents() {
   [ "$rc" != 0 ] || _fail "ran without a sandbox"; [ ! -e "$r/ran" ] || _fail "ran without a sandbox"; assert_contains "$(cat "$HOME/err")" "격리 실행 도구 없음"
 }
 
-# --- second fix wave (P27): the build sandbox denies writes by default ---
-# The build may write the project, a temp folder made for the run and the folders the user gave the
-# agent's shell (sandbox.filesystem.allowWrite); nothing else -- not the home directory, the user's
-# TMPDIR or PATH folders -- and inside those, not the git folder, .claude or the design state.
-test_p27_exec_denies_writes_by_default() {
-  local r o out rt p; [ -x /usr/bin/sandbox-exec ] || command -v bwrap >/dev/null 2>&1 || return 0
-  export GA_TEST_MANAGED_SETTINGS=/nonexistent
+# --- follow-up 3 (P38): the build sandbox denies only what turns the gates off ---
+# Ordinary build writes (home caches, PATH folders, git internals, hook scripts, .mcp.json) work; the
+# state folder, the settings files, the plugin folder and the data dir (fingerprint store) do not. The
+# build gets its own temp folder (removed afterwards).
+test_p38_exec_denies_only_gate_files() {
+  local r o out rt p dd pp; [ -x /usr/bin/sandbox-exec ] || command -v bwrap >/dev/null 2>&1 || return 0
   r=$(phys "$(mk_project)"); git -C "$r" init -q; GA_HARNESS=claude-code ga --root "$r" init >/dev/null
-  mkdir -p "$r/src" "$r/.claude/hooks" "$HOME/.claude" "$HOME/.local/bin" "$HOME/Library/LaunchAgents" "$HOME/cache"
-  echo '{"sandbox":{"filesystem":{"allowWrite":["~/cache"]}}}' >"$HOME/.claude/settings.json"
-  o=$(phys "${TMPDIR:-/tmp}")
-  out=$("$ENF" exec "$r" -- /bin/bash -c '
+  mkdir -p "$r/src" "$r/.claude/hooks" "$HOME/.claude" "$HOME/.local/bin" "$HOME/.cache" "$HOME/.npm"
+  echo '{}' >"$HOME/.claude/settings.json"; dd=$(phys "$(mktemp -d)"); o=$(phys "${TMPDIR:-/tmp}"); pp=$(phys "$PLUGIN")/.ga-p38-probe
+  out=$(GA_DATA_DIR=$dd "$ENF" exec "$r" --protect "$dd" -- /bin/bash -c '
     t() { if ( : >>"$1" ) 2>/dev/null; then echo "W $1"; else echo "D $1"; fi; }
-    echo "TMP $TMPDIR"; t "$1/src/x"; t "$TMPDIR/x"; t "$HOME/cache/x"
-    t "$HOME/.local/bin/x"; t "$HOME/.gitconfig"; t "$HOME/Library/LaunchAgents/x"; t "$1/.git/commondir"; t "$1/.git/index"
-    t "$1/.claude/hooks/x"; t "$2/ga-p27-probe"; t "$1/docs/architecture/.state/x"' _ "$r" "$o" 2>/dev/null)
-  rt=$(sed -n 's/^TMP //p' <<<"$out")
-  [ -n "$rt" ] && [ "$(phys "$rt" 2>/dev/null || echo "$rt")" != "$o" ] || _fail "the build got the user's TMPDIR: [$rt]"
-  assert_contains "$out" "W $r/src/x"; assert_contains "$out" "W $rt/x"; assert_contains "$out" "W $HOME/cache/x"
-  for p in "$HOME/.local/bin/x" "$HOME/.gitconfig" "$HOME/Library/LaunchAgents/x" "$r/.git/commondir" "$r/.git/index" \
-           "$r/.claude/hooks/x" "$o/ga-p27-probe" "$r/docs/architecture/.state/x"; do
+    echo "TMP $TMPDIR"; t "$1/src/x"; t "$TMPDIR/x"; t "$HOME/.cache/x"; t "$HOME/.npm/x"; t "$HOME/.local/bin/x"
+    t "$1/.git/hooks/pre-commit"; t "$1/.mcp.json"; t "$1/.claude/hooks/x.sh"; t "$2/ga-p38-probe"
+    t "$1/docs/architecture/.state/x"; t "$1/.claude/settings.local.json"; t "$HOME/.claude/settings.json"; t "$3/f"; t "$4"' \
+    _ "$r" "$o" "$dd" "$pp" 2>/dev/null)
+  rm -f "$pp" "$o/ga-p38-probe"
+  rt=$(sed -n 's/^TMP //p' <<<"$out"); case "$rt" in "$dd"/tmp/ga-build.*) ;; *) _fail "the build's TMPDIR is not its own folder: [$rt]" ;; esac
+  for p in "$r/src/x" "$rt/x" "$HOME/.cache/x" "$HOME/.npm/x" "$HOME/.local/bin/x" "$r/.git/hooks/pre-commit" "$r/.mcp.json" \
+           "$r/.claude/hooks/x.sh" "$o/ga-p38-probe"; do
+    assert_contains "$out" "W $p"
+  done
+  for p in "$r/docs/architecture/.state/x" "$r/.claude/settings.local.json" "$HOME/.claude/settings.json" "$dd/f" "$pp"; do
     assert_contains "$out" "D $p"
   done
   [ ! -e "$rt" ] || _fail "the run's temp folder was not removed: $rt"
 }
+
 
 # --- P32 (M2): the texts do not claim the fingerprint catches what it cannot ---
 test_p32_texts_do_not_overstate_the_fingerprint() {

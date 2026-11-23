@@ -7,15 +7,13 @@
 #   uninstall ROOT           removes exactly what install added (reads .state/enforce.json)
 #   status ROOT              prints {"active":bool,"reason":"...","settings":"...","warnings":[...]}
 #                            (the first bytes are exactly {"active":true, or {"active":false,)
-#   protects ROOT PATH       exit 0: a settings file with the isolation settings; 3: a file the
-#                            harness runs outside the sandbox (protected while a design exists); 1:
-#                            neither
-#   protects ROOT --list     the same for paths on stdin: prints "0 PATH" / "3 PATH" lines
+#   protects ROOT PATH       exit 0: a settings file with the isolation settings (protected while a
+#                            design exists); 1: not
+#   protects ROOT --list     the same for paths on stdin: prints "0 PATH" lines
 #   exec ROOT [--protect P]... -- CMD...
-#                            runs CMD in an OS sandbox that denies writes by default (P27): CMD may
-#                            write ROOT, a fresh temp folder (its TMPDIR, TMP, TEMP; removed after) and
-#                            the harness's user-granted write folders, but never the git folder, the
-#                            harness's own folders, the state folder, P or the plugin folder; CMD gets
+#                            runs CMD in an OS sandbox that denies writes only to what turns the gates
+#                            off (P38): the state folder, the settings files, the plugin folder and P;
+#                            CMD gets a fresh temp folder (its TMPDIR, TMP, TEMP; removed after) and
 #                            the user's PATH (GA_USER_PATH). No sandbox tool: exit 125 and
 #                            "격리 실행 도구 없음" on stderr
 
@@ -67,13 +65,12 @@ ga_enforce_status() { # ROOT
 }
 
 # What the adapter says canonical PATH is for design ROOT: rc 0 a settings file with the isolation
-# settings, 3 a file the harness runs outside the sandbox, 1 neither (also with no harness named),
-# 2 the adapter failed (callers treat it as protected).
+# settings, 1 not (also with no harness named), 2 the adapter failed (callers treat it as protected).
 ga_enforce_protects() { # ROOT PATH
   local s rc=0
   s=$(_ga_enforce_script 2>/dev/null) || return 1
   "$s" protects "$1" "$2" >/dev/null 2>&1 || rc=$?
-  case "$rc" in 0 | 1 | 3) return "$rc" ;; *) return 2 ;; esac
+  case "$rc" in 0 | 1) return "$rc" ;; *) return 2 ;; esac
 }
 
 # stdin: paths relative to ROOT. Prints the ones that are the harness's settings files (P19: those
@@ -90,8 +87,8 @@ ga_enforce_settings_rel() { # ROOT
     done
 }
 
-# P16/P27: runs CMD... inside the adapter's OS sandbox (writes denied by default; see the contract
-# above). rc 125 with "격리 실행 도구 없음" when there is no harness or no tool.
+# P16/P38: runs CMD... inside the adapter's OS sandbox (the gate files read-only, the data dir among
+# them; see the contract above). rc 125 with "격리 실행 도구 없음" when there is no harness or no tool.
 ga_enforce_exec() { # ROOT CMD...
   local s root=$1
   shift

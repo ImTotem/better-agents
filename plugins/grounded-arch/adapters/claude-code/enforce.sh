@@ -10,22 +10,20 @@
 #        enforce.sh protects ROOT PATH
 #                                  exit 0 when canonical PATH is a Claude Code settings file
 #                                  (.claude/settings*.json of ROOT, of the main checkout, of ~/.claude
-#                                  or CLAUDE_CONFIG_DIR); exit 3 when Claude Code runs it outside the
-#                                  sandbox (.mcp.json and .claude/hooks of the project, ~/.claude.json,
-#                                  ~/.claude/plugins); 1 if neither. The core protects both only while a
-#                                  design exists (P30).
+#                                  or CLAUDE_CONFIG_DIR), 1 if not. The core protects them while a design
+#                                  exists. (P39: files Claude Code runs later -- .mcp.json, hook
+#                                  scripts, ~/.claude.json, ~/.claude/plugins -- are ordinary files.)
 #        enforce.sh protects ROOT --list
-#                                  the same for paths on stdin: prints "0 PATH" or "3 PATH" lines
+#                                  the same for paths on stdin: prints "0 PATH" lines
 #        enforce.sh exec ROOT [--protect PATH]... -- CMD [ARG...]
 #                                  runs CMD in an OS sandbox (macOS sandbox-exec, Linux bwrap) that
-#                                  denies writes by default (P27): CMD may write ROOT, a fresh temp
+#                                  denies writes only to what turns the gates off (P38): the state
+#                                  folder, the settings files, the plugin folder and each PATH (the
+#                                  core passes the data dir: fingerprint store and private temp). The
+#                                  rest, home caches included, stays writable. CMD gets a fresh temp
 #                                  folder in ga's private temp folder (P33; its TMPDIR, TMP and TEMP;
-#                                  removed afterwards) and the folders
-#                                  of the effective sandbox.filesystem.allowWrite, but never the git
-#                                  folder, .claude, .mcp.json, the state folder, the plugin folder, the
-#                                  Claude Code files in the home directory or each PATH. CMD gets the
-#                                  user's PATH (GA_USER_PATH). Exit 125 with "격리 실행 도구 없음" when
-#                                  there is no sandbox tool
+#                                  removed afterwards) and the user's PATH (GA_USER_PATH). Exit 125
+#                                  with "격리 실행 도구 없음" when there is no sandbox tool
 # No git command is run. bash 3.2 + jq only. status runs on every shell command: one jq call.
 
 # This runs outside the OS sandbox (spec 5.5, P28): only system tools; jq from a fixed list, never
@@ -96,19 +94,17 @@ is_bare() { LC_ALL=C grep -Eiq '^[[:space:]]*bare[[:space:]]*=[[:space:]]*true[[
 # where that file cannot be named with certainty (a bare repository, a .git file whose git dir has no
 # commondir, a common dir that is not a checkout's .git) sets LAYOUT_ERR: install refuses, status is
 # inactive.
-find_main() { # ROOT  (also sets GITDIR, the repository's own git dir, and GITENT, its .git entry)
+find_main() { # ROOT
   local d=$1 gd cdir line
-  MAIN=$1; COMMON=""; LAYOUT_ERR=""; GITDIR=""; GITENT=""
+  MAIN=$1; COMMON=""; LAYOUT_ERR=""
   while :; do
     if [ -d "$d/.git" ]; then
-      MAIN=$d; COMMON=$d/.git; GITDIR=$COMMON; GITENT=$d/.git
+      MAIN=$d; COMMON=$d/.git
       is_bare "$COMMON" && LAYOUT_ERR="${COMMON} 이(가) bare 저장소로 설정되어 있습니다"
       return 0
     elif [ -f "$d/.git" ]; then
-      GITENT=$d/.git
       line=$(LC_ALL=C sed -n 's/^gitdir: *//p' "$d/.git" | head -n 1)
       gd=$(resolve_dir "$line" "$d") || { LAYOUT_ERR="${d}/.git 이 가리키는 git 폴더를 찾을 수 없습니다"; return 0; }
-      GITDIR=$gd
       if [ ! -f "$gd/commondir" ]; then
         LAYOUT_ERR="${d}/.git 이 가리키는 git 폴더(${gd})에 commondir 이 없습니다(서브모듈이나 --separate-git-dir 저장소)"; return 0
       fi
@@ -284,30 +280,14 @@ protect_dirs() {
   HOME_C=$(canon_dir "$HOME/.claude")
   CFG_C=""; [ -n "${CLAUDE_CONFIG_DIR:-}" ] && CFG_C=$(canon_dir "$CLAUDE_CONFIG_DIR")
   ROOT_C=$(canon_dir "$ROOT/.claude"); MAIN_C=$(canon_dir "$MAIN/.claude")
-  SESS_P=""; [ -n "${CLAUDE_PROJECT_DIR:-}" ] && SESS_P=$(resolve_dir "$CLAUDE_PROJECT_DIR" /) || SESS_P=""
-  SESS_C=""; [ -z "$SESS_P" ] || SESS_C=$(canon_dir "$SESS_P/.claude")
 }
 
-# 0: a settings file with the isolation settings; 3: a file Claude Code runs outside the sandbox
-# (P20; P30 adds the project's .claude/hooks, whose scripts hooks run); 1: neither. Case-folded:
-# APFS is case-insensitive.
+# 0: a settings file with the isolation settings; 1: anything else. Case-folded: APFS is
+# case-insensitive.
 protect_kind() { # PATH (canonical)
   local p=$1 d n dir
   d=${p%/*}; n=${p##*/}
   shopt -s nocasematch
-  for dir in "$HOME_C" "$CFG_C"; do
-    [ -n "$dir" ] || continue
-    [[ $p == "$dir/plugins" || $p == "$dir/plugins/"* ]] && return 3
-  done
-  for dir in "$ROOT_C" "$MAIN_C" "$SESS_C"; do
-    [ -n "$dir" ] || continue
-    [[ $p == "$dir/hooks" || $p == "$dir/hooks/"* ]] && return 3
-  done
-  [[ $p == "$HOME_P/.claude.json" ]] && return 3
-  [ -n "$CFG_C" ] && [[ $p == "$CFG_C/.claude.json" ]] && return 3
-  if [[ $n == .mcp.json ]]; then
-    for dir in "$ROOT" "$MAIN" "$SESS_P"; do [ -n "$dir" ] && [[ $d == "$dir" ]] && return 3; done
-  fi
   case "$n" in settings*.json) ;; *) return 1 ;; esac
   for dir in "$ROOT_C" "$MAIN_C" "$HOME_C" "$CFG_C"; do
     [ -n "$dir" ] && [[ $d == "$dir" ]] && return 0
@@ -330,40 +310,12 @@ do_protects() { # PATH | --list
 # SBPL string literal.
 sb_str() { local s=$1; s=${s//\\/\\\\}; s=${s//\"/\\\"}; printf '"%s"' "$s"; }
 
-# Canonical form of an existing PATH (folder or file); fails when it does not exist.
-canon_existing() { # PATH
-  if [ -d "$1" ]; then phys_dir "$1"; return; fi
-  [ -e "$1" ] || [ -L "$1" ] || return 1
-  printf '%s/%s\n' "$(phys_dir "$(dirname "$1")")" "$(basename "$1")"
-}
-
-# P27: the folders of the effective sandbox.filesystem.allowWrite -- the write scope the user already
-# gave the agent's own sandboxed shell (managed, user, project and local settings; arrays merge) --
-# one physical path per line. "~/x" is in the home directory; a relative entry counts only in the
-# project's own settings files (from the session's project root). Entries with glob characters and
-# paths that do not exist are left out: the build never gets more than the agent's shell.
-allow_write_paths() {
-  local base=${SESS_P:-$ROOT} scope e
-  jq -nr --rawfile m "$(readable "$(managed_settings)")" --rawfile u "$(readable "$HOME/.claude/settings.json")" \
-    --rawfile p "$(readable "$ROOT/.claude/settings.json")" --rawfile l "$(readable "$SETTINGS")" '
-    def obj: (try fromjson catch null) | if type == "object" then . else {} end;
-    def aw($s): (try .sandbox.filesystem.allowWrite catch null) | if type == "array" then .[] | strings | $s + "\t" + . else empty end;
-    ($m | obj | aw("g")), ($u | obj | aw("g")), ($p | obj | aw("p")), ($l | obj | aw("p"))' 2>/dev/null |
-    while IFS=$'\t' read -r scope e; do
-      case "$e" in "" | *'*'* | *'?'* | *'['* | *$'\n'*) continue ;; esac
-      case "$e" in
-        "~") e=$HOME ;;
-        "~/"*) e=$HOME/${e#"~/"} ;;
-        //*) e=/${e#//} ;;
-        /*) ;;
-        *) [ "$scope" = p ] || continue; e=$base/$e ;;
-      esac
-      canon_existing "$e" 2>/dev/null
-    done
-}
-
+# P38 (spec 5.5 rule 1): the build may write anything except what turns the gates off -- the state
+# folder, the settings files with the isolation settings, the plugin folder and each --protect PATH
+# (the core passes the data dir: fingerprint store and private temp). Ordinary builds (home caches
+# included) run as they would in the agent's shell.
 do_exec() { # [--protect PATH]... -- CMD...
-  local -a extra=() prot=() allow=() bw_args=()
+  local -a extra=() prot=() bw_args=()
   local p a seen=$'\n' prof sbx bw pt rt rc
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -374,16 +326,9 @@ do_exec() { # [--protect PATH]... -- CMD...
   done
   [ $# -gt 0 ] || die "$USAGE" 2
   protect_dirs
-  # Written again (denied) inside the writable folders: the design state, the plugin, the whole git
-  # folder and the repository's .git entry, .claude and .mcp.json of the project, the main checkout
-  # and the session, the Claude Code files in the home directory, and each --protect PATH.
-  prot=("$SD" "$PLUGIN_ROOT" "$ROOT/.git" "$ROOT_C" "$MAIN_C" "$ROOT/.mcp.json" "$MAIN/.mcp.json"
-        "$HOME_C/settings.json" "$HOME_C/settings.local.json" "$HOME_C/plugins" "$HOME_P/.claude.json")
-  [ -z "$COMMON" ] || prot+=("$COMMON")
-  [ -z "$GITDIR" ] || prot+=("$GITDIR")
-  [ -z "$GITENT" ] || prot+=("$GITENT")
-  [ -z "$SESS_P" ] || prot+=("$SESS_C" "$SESS_P/.mcp.json" "$SESS_P/.git")
-  [ -z "$CFG_C" ] || prot+=("$CFG_C/settings.json" "$CFG_C/settings.local.json" "$CFG_C/plugins" "$CFG_C/.claude.json")
+  prot=("$SD" "$PLUGIN_ROOT" "$HOME_C/settings.json" "$HOME_C/settings.local.json"
+        "$ROOT_C/settings.json" "$ROOT_C/settings.local.json" "$MAIN_C/settings.json" "$MAIN_C/settings.local.json")
+  [ -z "$CFG_C" ] || prot+=("$CFG_C/settings.json" "$CFG_C/settings.local.json")
   for p in ${extra[@]+"${extra[@]}"}; do prot+=("$(canon_dir "$p")"); done
 
   sbx=/usr/bin/sandbox-exec
@@ -395,30 +340,20 @@ do_exec() { # [--protect PATH]... -- CMD...
     exit 125
   fi
 
-  # The writable folders: the project, the user's allowWrite folders, and a temp folder made for this
-  # run inside ga's private temp folder (P33: never in the user's TMPDIR, where the agent's shell could
-  # swap it for a link before it is resolved). That folder lies under the fingerprint store, so it is
-  # allowed again after the protected denies.
+  # A temp folder made for this run inside ga's private temp folder (P33). It lies under the data dir,
+  # which is protected, so it is allowed again after the protected denies.
   pt=$(private_tmp) || die "enforce: ga의 임시 폴더(${GA_DATA_DIR:-$HOME/.local/state/grounded-arch}/tmp)가 이 사용자 소유의 권한 700 폴더가 아니어서 빌드 확인을 실행하지 않았습니다. 사용자가 그 폴더를 확인하고 지우면 다시 만들어집니다" 2
   rt=$(/usr/bin/mktemp -d "$pt/ga-build.XXXXXX") && rt=$(phys_dir "$rt") ||
     die "enforce: 빌드 확인용 임시 폴더를 만들 수 없습니다" 2
   trap 'rm -rf "$rt"' EXIT
   trap 'exit 143' TERM INT HUP
-  allow=("$ROOT")
-  while IFS= read -r p; do [ -n "$p" ] && allow+=("$p"); done <<EOF
-$(allow_write_paths)
-EOF
 
   rc=0
   if [ -x "$sbx" ]; then
-    # Seatbelt: the later rule wins. Writes are denied, then allowed in the writable folders (and the
-    # devices a command needs), then denied again for the protected paths. Every parent folder of a
-    # protected path is denied as itself, so it cannot be renamed away (files inside stay writable).
-    prof="(version 1)(allow default)(deny file-write*)(allow file-write*"
-    for p in "${allow[@]}"; do prof="$prof (subpath $(sb_str "$p"))"; done
-    prof="$prof (literal \"/dev/null\") (literal \"/dev/zero\") (literal \"/dev/tty\") (literal \"/dev/stdout\")"
-    prof="$prof (literal \"/dev/stderr\") (literal \"/dev/dtracehelper\") (literal \"/dev/random\") (literal \"/dev/urandom\")"
-    prof="$prof (literal \"/dev/ptmx\") (subpath \"/dev/fd\") (regex #\"^/dev/ttys[0-9]+\$\"))(deny file-write*"
+    # Seatbelt: the later rule wins. Everything is allowed, then the protected paths are denied, then
+    # the run's temp folder is allowed again. Every parent folder of a protected path is denied as
+    # itself, so it cannot be renamed away (files inside those folders stay writable).
+    prof="(version 1)(allow default)(deny file-write*"
     for p in "${prot[@]}"; do
       prof="$prof (subpath $(sb_str "$p"))"
       a=${p%/*}
@@ -430,11 +365,9 @@ EOF
     prof="$prof)(allow file-write* (subpath $(sb_str "$rt")))"
     env TMPDIR="$rt" TMP="$rt" TEMP="$rt" PATH="$GA_USER_PATH" "$sbx" -p "$prof" "$@" || rc=$?
   else
-    # bwrap (Linux, untested here): the whole tree read-only, the writable folders bound writable on
-    # top, then the protected paths read-only again, then the run's temp folder. Bind mounts follow
-    # the folder, so a renamed parent keeps them read-only.
-    bw_args=(--ro-bind / / --dev /dev --proc /proc)
-    for p in "${allow[@]}"; do bw_args+=(--bind "$p" "$p"); done
+    # bwrap (Linux, untested here): everything as it is, the protected paths read-only, the run's temp
+    # folder writable again. Bind mounts follow the folder, so a renamed parent keeps them read-only.
+    bw_args=(--dev-bind / /)
     for p in "${prot[@]}"; do bw_args+=(--ro-bind-try "$p" "$p"); done
     bw_args+=(--bind "$rt" "$rt")
     env TMPDIR="$rt" TMP="$rt" TEMP="$rt" PATH="$GA_USER_PATH" "$bw" "${bw_args[@]}" -- "$@" || rc=$?

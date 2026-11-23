@@ -11,7 +11,7 @@ done
 # GA_RUNNERS_DIR (fake runner records) is honored only in test mode (R34a).
 GA_TEST_MODE=1; export GA_TEST_MODE
 # A suite started from inside a Claude Code session must not inherit that session's project root.
-unset CLAUDE_PROJECT_DIR GA_SESSION_ROOT GA_BUILD_PATH GA_USER_PATH
+unset CLAUDE_PROJECT_DIR GA_SESSION_ROOT GA_BUILD_PATH GA_USER_PATH GA_USER_TMPDIR XDG_CONFIG_HOME GA_DATA_DIR
 fails=0
 for f in "$@"; do
   if [ ! -f "$f" ]; then echo "FAIL $f (missing)"; fails=$((fails+1)); continue; fi

@@ -138,10 +138,10 @@ cmd_verify() {
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/ga-verify.XXXXXX") || ga_die "ga: 임시 디렉터리를 만들 수 없습니다" 2
 
   # 2. Build check (brownfield + skeleton only). It runs project code, and ga verify runs outside the
-  # OS sandbox (an MCP tool), so it runs only inside the adapter's sandbox (P16, P27): writes only to
-  # the project, a temp folder made for the run and the user's allowWrite folders, never to the git
-  # folder, .claude, the state folder, the fingerprint store or the plugin; the user's PATH
-  # (GA_USER_PATH). Without a sandbox it is not run.
+  # OS sandbox (an MCP tool), so it runs only inside the adapter's sandbox (P16, P38): it cannot write
+  # what turns the gates off (the state folder, the fingerprint store, the settings files, the
+  # plugin); it gets a temp folder made for the run and the user's PATH (GA_USER_PATH). Without a
+  # sandbox it is not run.
   if [ "$mode" = brownfield ] && [ "$phase" = skeleton ] && [ -f "$sd/test_command" ]; then
     local cmdline bexit btail
     cmdline=$(cat "$sd/test_command")

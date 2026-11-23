@@ -277,27 +277,11 @@ test_p19_settings_files_are_not_effect_violations() { local r s out
   out=$(gs "$r"); assert_eq allow "$(dec "$out")"; assert_eq "" "$(notice "$out")"
   assert_eq '[]' "$(cd "$r" && GA_HARNESS=claude-code ga effect check | jq -c .violations)"; }
 
-# P20: Write/Edit never touch a file that runs outside the sandbox -- paused or not (P30: while a design exists).
-test_p20_write_denies_files_run_outside_sandbox() { local r q p
-  r=$(enforced implement); git -C "$r" init -q; cd "$r"
-  for p in "$r/.git/config" "$r/.git/hooks/pre-commit" "$r/.git/HOOKS/post-checkout" "$r/.git/modules/m/config" "$r/.git/modules/m/hooks/x" \
-           "$r/.git/worktrees/w/config.worktree" "$r/.mcp.json" "$HOME/.claude.json" "$HOME/.claude/plugins/other/hooks/h.sh" \
-           "$HOME/.claude/plugins/known_marketplaces.json"; do
-    [ "$(dec "$(gw "$p")")" = deny ] || _fail "not denied: $p"
-  done
-  for p in "$r/.git/info/exclude" "$r/src/config" "$r/hooks/a.sh" "$r/docs/mcp.json" "$HOME/.claude/CLAUDE.md"; do
-    [ "$(dec "$(gw "$p")")" = allow ] || _fail "denied: $p"
-  done
-  set_state "$r" '.paused=true'; assert_eq deny "$(dec "$(gw "$r/.git/config")")"; assert_eq deny "$(dec "$(gw "$r/.mcp.json")")"
-  # P30 (second wave): without a design anywhere these are ordinary files (test_p30_no_design_denies_nothing)
-  q=$(mk_project); git -C "$q" init -q; cd "$q"
-  assert_eq allow "$(dec "$(gw "$q/src/a.c")")"; assert_eq allow "$(dec "$(gw "$HOME/.claude/settings.json")")"; }
-
 # P21: GA 일시정지 turns off the phase rules only; the integrity protections and the fingerprint stay.
 test_p21_pause_keeps_integrity_protections() { local r p out
   r=$(enforced inputs); uc "$r" 'GA 일시정지' >/dev/null; cd "$r"
   for p in "$r/docs/architecture/.state/state.json" "$r/docs/architecture/.state/PAUSED" "$r/.claude/settings.local.json" \
-           "$HOME/.claude/settings.json" "$HOME/.local/state/grounded-arch/x.json" "$PLUGIN/core/lib/gates.sh" "$r/.mcp.json"; do
+           "$HOME/.claude/settings.json" "$HOME/.local/state/grounded-arch/x.json" "$PLUGIN/core/lib/gates.sh"; do
     [ "$(dec "$(gw "$p")")" = deny ] || _fail "not denied while paused: $p"
   done
   assert_eq allow "$(dec "$(gw "$r/src/a.c")")" # the phase rule (inputs: docs/architecture only) is off
@@ -313,29 +297,27 @@ test_p21_resume_lists_accepted_files() { local r out i
   out=$(uc "$r" 'GA 재개'); assert_contains "$out" "외 5개"
   uc "$r" 'GA 일시정지' >/dev/null; out=$(uc "$r" 'GA 재개'); assert_contains "$(jq -r .context <<<"$out")" "허용 밖 변경 없음"; }
 
-# --- second fix wave (P30): what runs outside the sandbox is protected only with a design (no design,
-# no change), and then also <root>/.claude/hooks (hook scripts run outside the sandbox) ---
-test_p30_no_design_denies_nothing() { local q p
-  q=$(mk_project); git -C "$q" init -q; cd "$q"
-  for p in "$q/.mcp.json" "$q/.git/hooks/pre-commit" "$q/.git/config" "$HOME/.claude.json" \
-           "$HOME/.claude/plugins/marketplaces/m/skills/s/SKILL.md" "$q/.claude/hooks/check.sh"; do
-    [ "$(dec "$(gw "$p")")" = allow ] || _fail "denied without a design: $p"
-  done; }
-test_p30_design_denies_paused_too_and_hook_scripts() { local r m w p
+# --- follow-up 3 (P39): the Write gate guards only what turns the gates off (the state folder, the
+# fingerprint store, the settings files, the plugin's own folder); git hooks and config, .mcp.json,
+# hook scripts, ~/.claude.json and other plugins are ordinary files, with a design and without ---
+test_p39_ordinary_files_allowed_gate_files_denied() { local r q p
   r=$(enforced implement); git -C "$r" init -q; cd "$r"
-  for p in "$r/.mcp.json" "$r/.git/hooks/pre-commit" "$r/.git/config" "$HOME/.claude.json" "$HOME/.claude/plugins/x.sh" \
-           "$r/.claude/hooks/check.sh" "$r/.claude/HOOKS/sub/y.sh"; do
+  for p in "$r/.git/hooks/pre-commit" "$r/.git/config" "$r/.mcp.json" "$r/.claude/hooks/x.sh" "$HOME/.claude.json" \
+           "$HOME/.claude/plugins/other/hooks/h.sh" "$r/.claude/agents/a.md" "$r/src/a.c"; do
+    [ "$(dec "$(gw "$p")")" = allow ] || _fail "denied with a design: $p"
+  done
+  for p in "$r/docs/architecture/.state/state.json" "$HOME/.local/state/grounded-arch/x.json" "$r/.claude/settings.local.json" \
+           "$r/.claude/settings.json" "$HOME/.claude/settings.json" "$PLUGIN/core/lib/gates.sh"; do
     [ "$(dec "$(gw "$p")")" = deny ] || _fail "not denied with a design: $p"
   done
-  assert_eq allow "$(dec "$(gw "$r/.claude/agents/a.md")")"
   uc "$r" 'GA 일시정지' >/dev/null
-  for p in "$r/.mcp.json" "$r/.git/hooks/pre-commit" "$HOME/.claude.json" "$r/.claude/hooks/check.sh"; do
-    [ "$(dec "$(gw "$p")")" = deny ] || _fail "not denied while paused: $p"
+  assert_eq allow "$(dec "$(gw "$r/.mcp.json")")"; assert_eq deny "$(dec "$(gw "$r/.claude/settings.local.json")")"
+  assert_eq deny "$(dec "$(gw "$PLUGIN/core/lib/gates.sh")")"
+  q=$(mk_project); git -C "$q" init -q; cd "$q" # no design anywhere: only the fingerprint store
+  for p in "$q/.mcp.json" "$q/.git/hooks/pre-commit" "$q/.claude/hooks/check.sh" "$HOME/.claude/settings.json" "$PLUGIN/core/lib/gates.sh"; do
+    [ "$(dec "$(gw "$p")")" = allow ] || _fail "denied without a design: $p"
   done
-  # a design in a worktree also protects the main checkout's hook scripts
-  m=$(mk_project); m=$(cd -P "$m" && pwd -P); git -C "$m" init -q; echo a >"$m/a"; git -C "$m" add a; git -C "$m" -c user.email=t@example.com -c user.name=t commit -qm a
-  w=$(mktemp -d)/wt; git -C "$m" worktree add -q "$w" 2>/dev/null; w=$(cd -P "$w" && pwd -P); GA_HARNESS=claude-code ga --root "$w" init >/dev/null; cd "$w"
-  assert_eq deny "$(dec "$(gw "$m/.claude/hooks/x.sh")")"; assert_eq deny "$(dec "$(gw "$w/.claude/hooks/x.sh")")"; }
+  assert_eq deny "$(dec "$(gw "$HOME/.local/state/grounded-arch/x.json")")"; }
 
 # --- P31: one spelling per file ---
 # The /System/Volumes/Data firmlink spelling of a home path or the plugin is judged like the plain one.
@@ -343,7 +325,7 @@ test_p31_firmlink_spelling_judged_like_plain() { local r h f p
   [ -d /System/Volumes/Data ] || return 0
   r=$(enforced inputs); cd "$r"; h=$(cd -P "$HOME" && pwd -P); f=/System/Volumes/Data$h
   [ "$(stat -f %d:%i "$h" 2>/dev/null)" = "$(stat -f %d:%i "$f" 2>/dev/null)" ] || return 0
-  for p in .local/state/grounded-arch/x.json .claude/settings.json .claude.json .claude/plugins/x/y.sh; do
+  for p in .local/state/grounded-arch/x.json .claude/settings.json .claude/settings.local.json; do
     assert_eq deny "$(dec "$(gw "$h/$p")")"
     [ "$(dec "$(gw "$f/$p")")" = deny ] || _fail "firmlink spelling allowed: $f/$p"
   done
