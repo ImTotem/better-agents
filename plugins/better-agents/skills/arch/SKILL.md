@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # 아키텍처 설계 (ADD 3.0 + 근거 규칙)
 
-**다시 읽기:** 단계를 시작할 때와 컨텍스트 압축 뒤에는(압축 뒤에는 이 문서의 앞부분만 남는다) `ga status`로 현재 단계를 확인하고 `${CLAUDE_SKILL_DIR}/SKILL.md`의 0절, 1절, 현재 단계 절을 Read로 다시 읽는다.
+**다시 읽기:** 단계를 시작할 때와 컨텍스트 압축 뒤에는(압축 뒤에는 이 문서의 앞부분만 남는다) `ga status`로 현재 단계를 확인하고, `${CLAUDE_SKILL_DIR}/SKILL.md`의 0절과 1절, `${CLAUDE_SKILL_DIR}/phases/<현재 단계>.md`를 Read로 다시 읽는다.
 
 코드보다 먼저 아키텍처를 위에서 아래로 설계한다. 단계: `inputs` → `iterating`(반복 1..N) → `design-review` → `skeleton` → `implement`. 문서는 `docs/architecture/architecture.md` 하나다. 원장과 단계는 `docs/architecture/.state/`에 있고 `ga`만 쓴다.
 
@@ -36,11 +36,11 @@ disable-model-invocation: true
 ## 1. 시작
 
 1. 프로젝트 루트에서 `ga status`(셸)를 실행한다. `command -v ga`가 실패하면 `"${CLAUDE_PLUGIN_ROOT}/bin/ga" status`를 쓴다.
-2. "초기화된 프로젝트가 없습니다"(종료 2)면 `ga_init`을 인자 없이 부른다. 출력된 모드와 근거, 격리 설정 경로를 보고하고, 2절 전에 모드가 맞는지 사용자에게 명시적으로 확인받는다.
+2. "초기화된 프로젝트가 없습니다"(종료 2)면 `ga_init`을 인자 없이 부른다. 출력된 모드와 근거, 격리 설정 경로를 보고하고, 모드가 맞는지 사용자에게 명시적으로 확인받은 뒤 `inputs` 단계(`${CLAUDE_SKILL_DIR}/phases/inputs.md`)로 간다.
    - `greenfield`(새 프로젝트)는 뼈대 단계의 대응표 쓰기 제한과 빌드 확인이 꺼지고, `brownfield`(기존 코드)는 켜진다.
    - 모드가 틀렸으면 사용자에게 `docs/architecture/.state/`를 직접 지워 달라고 한 뒤 `ga_init`을 `{"mode":"greenfield"}`나 `{"mode":"brownfield"}`로 부른다.
    - 종료 3(홈 디렉터리나 `/`, 같은 저장소의 상위 디렉터리에 이미 설계가 있음, 심볼릭 링크 폴더)이면 메시지를 보여 주고 어디서 설계할지 묻는다.
-3. 이미 초기화됐으면 architecture.md를 읽고 출력된 단계부터 이어 간다. `일시정지: true`면 먼저 `GA 재개`를 요청한다.
+3. 이미 초기화됐으면 architecture.md와 `${CLAUDE_SKILL_DIR}/phases/<출력된 단계>.md`를 읽고 그 단계부터 이어 간다. `일시정지: true`면 먼저 `GA 재개`를 요청한다.
 
 ### 격리와 결과 확인
 
@@ -80,102 +80,19 @@ disable-model-invocation: true
 
 승인에는 현재 단계·라운드·반복의 최신 검증 보고서, 허용 밖 변경 없음, 맞는 상태 지문이 필요하다. 승인 조건은 **현재 라운드의 항목만** 센다. 단, 해결되지 않은 가정과 질문은 모든 라운드에서 승인을 막는다. `ga status`의 `open`·`asked`도 같은 기준으로 센다.
 
-## 2. `inputs` 단계 (ADD 1단계: 설계 입력)
+## 2. 단계
 
-"무엇을, 왜"만 다룬다. 기술, 프레임워크, 모듈 구조, 패턴을 고르거나 제안하지 않는다(`decision` 기록 불가). 사용자가 이미 정한 기술이나 구조는 `constraint`(출처는 사용자 발언)로 기록한다.
+단계마다 할 일은 `${CLAUDE_SKILL_DIR}/phases/<단계>.md`에 있다. 단계를 시작할 때 그 파일을 읽는다.
 
-대화로 아래를 정리하고, 확인된 것마다 바로 `ga_add`로 기록한다. 한 번에 많이 묻지 않는다.
+| 단계 | 파일 | 승인 줄 |
+|---|---|---|
+| `inputs` (ADD 1단계: 설계 입력) | `phases/inputs.md` | `GA 승인 입력` |
+| `iterating` (ADD 2~7단계, 반복마다) | `phases/iterating.md` | `GA 승인 반복` |
+| `design-review` | `phases/design-review.md` | `GA 승인 설계` |
+| `skeleton` | `phases/skeleton.md` | `GA 승인 뼈대` |
+| `implement` | `phases/implement.md` | 없음(새 기능은 `GA 새라운드`) |
 
-1. **설계 목적**(`driver_type: purpose`): 무엇을 왜 만드는지와 범위. 1개 이상. architecture.md 1절에도 쓴다.
-2. **기능**(`functional`): 현재 기능은 `horizon: current`. 미래 기능은 사용자가 말한 로드맵만 `horizon: future` 드라이버로 둔다. 문헌상 흔한 확장은 `assumption`(`literature_norm`)으로 두고, 근거 없는 기능은 넣지 않는다.
-3. **품질 속성 시나리오**(`quality`): `scenario`의 `stimulus`(환경 포함), `response`, `measure`. `measure`는 측정할 수 있어야 한다(예: p95 2초 이하, 월 중단 43분 이하, 결제 수단 추가 시 바뀌는 모듈 1개). "빠르게"는 시나리오가 아니니 수치를 묻는다.
-4. **고려사항**(`concern`): 구조에 영향을 주는 관심사(예: 오류 처리와 로깅의 일관성, 배포 환경, 팀이 익숙한 언어).
-5. **제약**(`constraint`): 사용자가 못 박은 기술, 표준, 일정, 비용.
-6. **우선순위와 반복 계획**: 드라이버마다 `priority`(high, medium, low)를 사용자와 정한다. `high`에만 `iteration`을 1부터 빈 번호 없이 준다. 반복 1은 보통 시스템 전체 구조를 정한다. 반복 수는 필요한 만큼만 둔다.
-
-드라이버 출처는 직접 근거다(대개 `"type":"user"`와 사용자 원문 `quote`). 간접 근거뿐이면 `assumption`이다.
-
-**기존 코드 모드:** 모듈, 의존 관계, 진입점, 이미 있는 설계 결정, 빌드·테스트 방법을 읽는다. 코드로 확인한 것은 `fact`(출처 `code`, 실제로 있는 `경로:줄`)로, 코드만 보고 짐작한 의도(예: "이 계층 분리는 테스트를 위한 것으로 보인다")는 `assumption`(`code_convention`)으로 기록한다.
-
-**질문:** `ga_add`(kind `question`) 후 `ga_ask`에 `{"id":"Q-n"}`. 질문, 탐색 기록, 답에 따라 바뀌는 것을 보여 주고 `GA 답 Q-n 답변`을 요청한다. 답에서 나온 드라이버나 제약은 `ga_add`로 기록한다(출처 `user`, `quote`는 사용자 원문).
-
-**`ga_add` 예시** (값은 예시다. `purpose`·`functional` 드라이버는 `scenario`만 빠진다.)
-
-```json
-{"kind":"driver","item":{"driver_type":"quality","statement":"성능: 판매 개시 직후 좌석 조회","horizon":"current","priority":"high","iteration":1,
- "scenario":{"stimulus":"정상 운영 중, 판매 개시 후 1분간 5,000명이 좌석 조회","response":"남은 좌석 목록","measure":"p95 응답 시간 2초 이하"},
- "source":{"type":"user","ref":"대화","quote":"오픈 직후 5천 명이 몰려도 2초 안에 좌석이 떠야 해요"}}}
-{"kind":"constraint","item":{"statement":"DB는 PostgreSQL","source":{"type":"user","ref":"대화","quote":"DB는 회사 표준인 PostgreSQL이어야 해요"}}}
-{"kind":"fact","item":{"statement":"HTTP 라우트는 한 곳에서 등록한다","source":{"type":"code","ref":"src/server.ts:12"}}}
-{"kind":"assumption","item":{"statement":"좌석 조회는 판매 개시 후 10분 안에 대부분 몰린다",
- "indirect_evidence":[{"type":"goal_inference","ref":"DRV-2의 사용자 발언 '오픈 직후 5천 명이 몰려도'"}],
- "search_log":{"code":"해당 없음: 새 프로젝트","docs":"README.md, CLAUDE.md, docs/, 메모리 디렉터리: 언급 없음",
-   "conversation":"오픈 직후 집중만 말함","web":"해당 없음: 이 서비스 고유의 패턴이라 문헌으로 못 정함"},
- "alternatives":[{"assumption":"하루 내내 고르게 분산된다","reason":"사용자가 오픈 직후 집중을 말했다"}]}}
-{"kind":"question","item":{"question":"결제 전 좌석은 몇 분 동안 잡아 두나요?",
- "search_log":{"code":"해당 없음: 새 프로젝트","docs":"README.md, CLAUDE.md, docs/, 메모리 디렉터리: 정책 없음",
-   "conversation":"언급 없음","web":"'ticket seat hold timeout' 검색: 서비스마다 달라 근거 없음"},
- "impact":"좌석 점유 요구사항과 동시 예매 시나리오의 측정 기준"}}
-```
-
-1절 절차 후 `GA 승인 입력`을 요청한다. 승인 조건(현재 라운드): 결정 0개, `purpose` 드라이버 1개 이상, `high` 드라이버 1개 이상이고 반복 번호가 1..N으로 이어짐. 승인되면 반복 1이 시작된다.
-
-## 3. `iterating` 단계 (ADD 2~7단계, 반복마다)
-
-`ga status`로 현재 반복 n을 확인한다. 이번 드라이버는 architecture.md 4절(현재 라운드의 반복 계획)에서 반복 n의 `high` 드라이버다. 5절에 `### 반복 n: 목표` 소절(라운드 2부터 `### 라운드 r 반복 n: 목표`)을 만들고 순서대로 채운다.
-
-1. **반복 목표**(ADD 2): 다룰 드라이버 ID와 목표 한 줄.
-2. **세분화할 요소**(ADD 3): 첫 반복은 시스템 전체, 이후는 앞 반복의 요소 중 이번 드라이버와 관련된 것.
-3. **설계 개념 비교와 결정**(ADD 4): 요소마다 실제로 성립하는 후보(참조 아키텍처, 패턴, 전술, 프레임워크, 외부 컴포넌트)를 근거와 함께 **두 개 이상** 놓고, 연결된 드라이버의 시나리오와 측정 기준에 비추어 비교한다. 고른 것을 `ga_add`(kind `decision`)로 기록한다.
-   - `choice`: 고른 것. `rationale`: 출처 1개 이상. `drivers`: 다루는 DRV ID 1개 이상. `alternatives`: 버린 후보와 이유(어떤 드라이버의 어떤 시나리오를 왜 못 맞추는지). 허수아비 대안은 검증에서 반려된다.
-   - 사용자 제약 때문에 대안이 없으면 `[{"none":"user_constraint","source":{"type":"user","ref":"대화","quote":"사용자 원문"}}]`.
-   - 추가한 뒤 `ga check`를 실행한다. 없는 드라이버를 가리키는지는 원장 전체 검사에서만 잡힌다.
-4. **요소, 책임, 인터페이스**(ADD 5): 요소마다 책임과 공개 인터페이스(연산, 입력과 출력, 오류)를 표로 쓴다.
-5. **구조도**(ADD 6): 같은 소절에 mermaid 코드 블록으로 그린다. 요소 이름은 4의 표와 같게 쓴다.
-6. **드라이버 분석**(ADD 7): 이번 드라이버와 영향받은 드라이버마다 `충족`, `부분`, `미충족`과 근거(DEC-n, 측정 기준과의 관계)를 표로 쓴다. 부분·미충족이면 이유와 다룰 반복을 적는다.
-7. **검증과 승인**: 1절 절차 후 `GA 승인 반복`을 요청한다. 승인 조건(현재 라운드): 이번 반복의 결정 1개 이상, 이번 반복의 `high` 드라이버가 모두 이번 반복 결정의 `drivers`에 있음. 마지막 반복이 승인되면 `design-review`로 간다.
-
-```json
-{"kind":"decision","item":{"element":"좌석 조회 경로","choice":"캐시 어사이드(cache-aside) 읽기 캐시",
- "rationale":[{"type":"literature","ref":"https://learn.microsoft.com/en-us/azure/architecture/patterns/cache-aside"},{"type":"user","ref":"대화","quote":"오픈 직후 5천 명이 몰려도 2초 안에 좌석이 떠야 해요"}],
- "alternatives":[{"option":"DB 직접 조회와 인덱스","reason":"DRV-2 시나리오(1분에 5,000명 조회)의 요청이 모두 DB로 가 p95 2초를 맞추기 어렵다"},
-                 {"option":"좌석 현황 푸시","reason":"DRV-2는 조회 응답 시간을 요구하는데, 푸시는 좌석이 바뀔 때마다 5,000명에게 보내 송신량이 더 크다"}],
- "drivers":["DRV-2"]}}
-```
-
-새로 생긴 가정과 질문도 0절 규칙대로 기록한다. 새로 알게 된 드라이버는 `ga_add`(kind `driver`)로 추가하고, `high`면 현재나 남은 반복 번호를 준다.
-
-## 4. `design-review` 단계
-
-1. architecture.md 전체를 다시 읽고 확인한다: 결정끼리 모순이 없는지, 현재 라운드의 모든 `high` 드라이버가 결정에 연결됐는지, 드라이버 분석이 최신인지, 부분·미충족 드라이버를 어떻게 처리할지.
-2. 구조도, 핵심 결정, 부분·미충족 드라이버를 요약해 보여 주고 사용자 검토를 받는다.
-3. 반복이 더 필요하면 `GA 되돌리기`를 요청한다(반복이 하나 추가되고 `iterating`으로 돌아간다). 새 반복에서 다룰 드라이버는 `ga_update`로 `"priority":"high"`와 새 반복 번호(`ga status`의 현재 반복)로 바꾸고 3절을 따른다.
-4. 1절 절차 후 `GA 승인 설계`를 요청한다. 승인 조건: 현재 라운드의 모든 `high` 드라이버가 어떤 결정에 연결됨.
-
-## 5. `skeleton` 단계
-
-구조만 만들고 동작은 만들지 않는다.
-
-1. **대응표 먼저:** `ga_add`(kind `mapping`)로 설계 요소(`element`, 5절의 이름)와 위치(`path`, 루트 기준 상대 경로)를 잇고 `change`(`new`, `changed`, `kept`)를 쓴다. 예: `{"kind":"mapping","item":{"element":"좌석 조회 서비스","path":"src/seat/query.ts","change":"new"}}`
-   - 새 프로젝트: 요소마다 코드 위치(파일이나 디렉터리)를 기록한다.
-   - 기존 코드: 만들거나 바꿀 **파일마다** 기록한다. `new`·`changed` 파일만 쓸 수 있고 경로가 정확히 같아야 한다(셸로 바꾼 파일도 1절 결과 확인에서 같다). 바꾸지 않는 관련 요소는 `kept`로 둔다.
-2. **뼈대:** 폴더, 모듈, 인터페이스와 타입, 빈 함수를 만든다. 함수 본문에는 미구현 표시만 둔다(예: `throw new Error("not implemented")`, `raise NotImplementedError`). 로직은 쓰지 않는다.
-3. **기존 코드 모드**
-   - 새로 생기거나 바뀌는 모듈과 인터페이스만 만든다. 기존 코드를 옮기거나 이름을 바꾸면 따로 결정(`ga_add`, kind `decision`)으로 기록한다.
-   - 기존 빌드와 테스트가 계속 통과해야 한다. 빌드·테스트 명령을 찾아(예: `package.json`의 scripts, `Makefile`) 찾은 위치와 함께 제안하고, `GA 테스트명령 명령`으로 지정해 달라고 한다(예: `GA 테스트명령 npm test`). `ga_verify`가 이 명령을 운영체제 격리 안에서 사용자의 `PATH`와 실행마다 새로 만든 임시 폴더(`TMPDIR`)로 돌려 보고서에 넣는다. 실패하면 뼈대를 고치고 다시 검증한다.
-   - 빌드는 0절의 보호 대상(상태 폴더, 상태 지문 저장 위치, `.claude` 설정 파일, 플러그인 폴더)만 쓸 수 없고, 나머지(홈 폴더의 빌드 캐시 포함)는 평소처럼 쓴다.
-   - 격리 실행 도구(macOS `sandbox-exec`, Linux `bwrap`)가 없으면 빌드 확인을 건너뛰고 `GA 승인 뼈대`가 막히니 사용자에게 알린다.
-4. 1절 절차 후 `GA 승인 뼈대`를 요청한다. 기존 코드 모드의 승인 조건(현재 라운드): 대응표 1개 이상, 빌드 확인 통과(`ga status --json`의 `build_ok`가 true).
-
-## 6. `implement` 단계
-
-프로젝트 파일을 쓸 수 있다(0절의 보호는 그대로). 설계 문서와 대응표대로 세부 로직을 구현한다.
-
-- 대응표에 없는 새 요소나 위치는 쓰기 전에 `ga_add`(kind `mapping`)로 기록한다.
-- **설계에서 벗어날 때:** 그 코드를 쓰기 전에 결정을 `"deviation": true`와 함께 `ga_add`로 기록한다(근거, 버린 대안, 드라이버 포함). architecture.md를 고치고 `ga_render`를 부른다. 사용자가 확인하기 전까지 문서에 "미승인 이탈"로 보이니, 내용과 이유를 보여 주고 `GA 확인 DEC-n`을 요청한다. 이탈 승인은 이것으로만 기록된다(이탈 결정에 `ga_resolve`는 거부된다).
-- **새 기능이 들어오면:** 미승인 이탈과 해결되지 않은 가정·질문을 모두 먼저 해결한 뒤 `GA 새라운드`를 요청한다(남아 있으면 거부된다). 같은 architecture.md에서 라운드 번호가 1 올라 `inputs`부터 다시 시작한다. 새 라운드는 자기 `purpose` 드라이버와 1부터 번호를 매긴 자기 `high` 드라이버가 필요하다. 이전 라운드의 드라이버, 결정, 대응표는 승인 조건에 세지 않는다.
-
-## 7. 명령 표
+## 3. 명령 표
 
 **상태를 바꾸는 MCP 도구** (서버 `ga`. 모두 선택 인자 `root`를 받지만 보통 주지 않는다)
 

@@ -1,0 +1,14 @@
+# `skeleton` 단계
+
+구조만 만들고 동작은 만들지 않는다.
+
+1. **대응표 먼저:** `ga_add`(kind `mapping`)로 설계 요소(`element`, architecture.md 5절의 이름)와 위치(`path`, 루트 기준 상대 경로)를 잇고 `change`(`new`, `changed`, `kept`)를 쓴다. 예: `{"kind":"mapping","item":{"element":"좌석 조회 서비스","path":"src/seat/query.ts","change":"new"}}`
+   - 새 프로젝트: 요소마다 코드 위치(파일이나 디렉터리)를 기록한다.
+   - 기존 코드: 만들거나 바꿀 **파일마다** 기록한다. `new`·`changed` 파일만 쓸 수 있고 경로가 정확히 같아야 한다(셸로 바꾼 파일도 SKILL.md 1절 결과 확인에서 같다). 바꾸지 않는 관련 요소는 `kept`로 둔다.
+2. **뼈대:** 폴더, 모듈, 인터페이스와 타입, 빈 함수를 만든다. 함수 본문에는 미구현 표시만 둔다(예: `throw new Error("not implemented")`, `raise NotImplementedError`). 로직은 쓰지 않는다.
+3. **기존 코드 모드**
+   - 새로 생기거나 바뀌는 모듈과 인터페이스만 만든다. 기존 코드를 옮기거나 이름을 바꾸면 따로 결정(`ga_add`, kind `decision`)으로 기록한다.
+   - 기존 빌드와 테스트가 계속 통과해야 한다. 빌드·테스트 명령을 찾아(예: `package.json`의 scripts, `Makefile`) 찾은 위치와 함께 제안하고, `GA 테스트명령 명령`으로 지정해 달라고 한다(예: `GA 테스트명령 npm test`). `ga_verify`가 이 명령을 운영체제 격리 안에서 사용자의 `PATH`와 실행마다 새로 만든 임시 폴더(`TMPDIR`)로 돌려 보고서에 넣는다. 실패하면 뼈대를 고치고 다시 검증한다.
+   - 빌드는 SKILL.md 0절의 보호 대상(상태 폴더, 상태 지문 저장 위치, `.claude` 설정 파일, 플러그인 폴더)만 쓸 수 없고, 나머지(홈 폴더의 빌드 캐시 포함)는 평소처럼 쓴다.
+   - 격리 실행 도구(macOS `sandbox-exec`, Linux `bwrap`)가 없으면 빌드 확인을 건너뛰고 `GA 승인 뼈대`가 막히니 사용자에게 알린다.
+4. SKILL.md 1절의 검증과 승인 절차 후 `GA 승인 뼈대`를 요청한다. 기존 코드 모드의 승인 조건(현재 라운드): 대응표 1개 이상, 빌드 확인 통과(`ga status --json`의 `build_ok`가 true).
