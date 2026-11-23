@@ -37,7 +37,7 @@ if [ "${GA_TEST_MODE:-}" = 1 ]; then
     *) [ "$GA_MCP_PROGRESS_SEC" -gt 0 ] && GA_MCP_TICK=$GA_MCP_PROGRESS_SEC ;;
   esac
 fi
-GA_MCP_INSTRUCTIONS="grounded-arch 설계 원장과 검증을 다루는 ga 명령 도구다. 각 도구는 같은 이름의 ga 하위 명령을 프로젝트 루트(인자 root, 없으면 CLAUDE_PROJECT_DIR)에서 실행하고 출력과 종료 코드를 돌려준다. 사용자 승인(GA 명령)은 이 서버로 기록할 수 없다."
+GA_MCP_INSTRUCTIONS="grounded-arch 설계 원장과 검증 도구. 각 도구는 같은 이름의 ga 하위 명령을 프로젝트 루트(인자 root, 없으면 CLAUDE_PROJECT_DIR)에서 실행해 출력과 종료 코드를 돌려준다. 사용자 승인(GA 줄)은 이 서버로 기록할 수 없다."
 
 [ -x "$GA_JQ" ] || { echo "ga-mcp: jq(${GA_JQ})가 없어 시작할 수 없습니다" >&2; exit 2; }
 GA_MCP_TMP=$(mktemp -d "${TMPDIR:-/tmp}/ga-mcp.XXXXXX") || { echo "ga-mcp: 임시 디렉터리를 만들 수 없습니다" >&2; exit 2; }
@@ -69,40 +69,40 @@ trap 'rm -rf "$GA_MCP_TMP"' EXIT
 
 # ---- tools ----
 # Each tool's inputSchema mirrors its ga subcommand's arguments; every tool also takes root.
-jq -c --argjson root '{"type":"string","description":"프로젝트 루트의 절대 경로. 없으면 CLAUDE_PROJECT_DIR"}' '
+jq -c --argjson root '{"type":"string","description":"프로젝트 루트의 절대 경로"}' '
   {tools: map({name, description,
     inputSchema: ({type: "object", properties: ((.props // {}) + {root: $root}), additionalProperties: false}
       + (if (.required // []) == [] then {} else {required} end))})}' >"$GA_MCP_TOOLS" <<'EOF' || { echo "ga-mcp: 도구 목록을 만들 수 없습니다" >&2; exit 2; }
 [
- {"name":"ga_init","description":"설계를 시작한다 (ga init). 출력: 정한 모드와 그 근거. 이미 초기화된 프로젝트면 실패한다.",
+ {"name":"ga_init","description":"설계를 시작한다. 출력: 정한 모드와 근거. 이미 초기화됐으면 실패.",
   "props":{"mode":{"type":"string","enum":["greenfield","brownfield"],"description":"없으면 기존 파일 유무로 정한다"}}},
- {"name":"ga_add","description":"원장에 항목 하나를 추가한다 (ga add KIND, item은 표준 입력 JSON). 출력: 새 ID. 규칙 위반이면 isError와 이유.",
+ {"name":"ga_add","description":"원장에 항목 하나를 추가한다. 출력: 새 ID. 규칙 위반이면 isError와 이유.",
   "props":{"kind":{"type":"string","enum":["driver","constraint","fact","decision","assumption","question","mapping"],"description":"항목 종류"},
-           "item":{"type":"object","description":"항목 내용 JSON 객체"}},
+           "item":{"type":"object","description":"항목 내용"}},
   "required":["kind","item"]},
- {"name":"ga_update","description":"항목의 최상위 필드를 바꾼다 (ga update ID, patch는 표준 입력 JSON). id, kind, status, resolution, resolution_history, round, phase_added, answer, deviation은 바꿀 수 없다. 객체 필드는 통째로 다시 준다.",
+ {"name":"ga_update","description":"항목의 최상위 필드를 바꾼다. id, kind, status, resolution, resolution_history, round, phase_added, answer, deviation은 못 바꾼다. 객체 필드는 통째로 준다.",
   "props":{"id":{"type":"string","minLength":1,"description":"항목 ID (예: ASM-1)"},
-           "patch":{"type":"object","description":"바꿀 최상위 필드만 담은 JSON 객체"}},
+           "patch":{"type":"object","description":"바꿀 최상위 필드만"}},
   "required":["id","patch"]},
- {"name":"ga_ask","description":"질문을 물은 상태(asked)로 바꾼다 (ga ask Q-n).",
+ {"name":"ga_ask","description":"질문을 물은 상태(asked)로 바꾼다.",
   "props":{"id":{"type":"string","minLength":1,"description":"질문 ID (예: Q-1)"}},
   "required":["id"]},
- {"name":"ga_resolve","description":"직접 근거로 가정이나 질문을 해결한다 (ga resolve ID --source-type T --ref REF). 결정에는 쓸 수 없다.",
+ {"name":"ga_resolve","description":"직접 근거로 가정이나 질문을 해결한다. 결정에는 못 쓴다.",
   "props":{"id":{"type":"string","minLength":1,"description":"가정 또는 질문 ID"},
            "source_type":{"type":"string","enum":["code","literature","measurement"],"description":"근거 종류"},
-           "ref":{"type":"string","minLength":1,"description":"근거 위치. code는 경로:줄, literature는 URL, doi:, isbn:"}},
+           "ref":{"type":"string","minLength":1,"description":"근거 위치(code는 경로:줄, literature는 URL, doi:, isbn:)"}},
   "required":["id","source_type","ref"]},
- {"name":"ga_render","description":"원장을 architecture.md의 ga 블록에 반영한다 (ga render)."},
- {"name":"ga_check","description":"원장 전체의 형식을 검사한다 (ga check). kind와 item을 함께 주면 그 항목 하나만 검사한다 (ga check --item KIND).",
+ {"name":"ga_render","description":"원장을 architecture.md의 ga 블록에 반영한다."},
+ {"name":"ga_check","description":"원장 전체의 형식을 검사한다. kind와 item을 함께 주면 그 항목 하나만 검사한다.",
   "props":{"json":{"type":"boolean","description":"true면 JSON으로 출력"},
            "kind":{"type":"string","enum":["driver","constraint","fact","decision","assumption","question","mapping"],"description":"item의 항목 종류"},
            "item":{"type":"object","description":"검사할 항목 하나"}}},
- {"name":"ga_status","description":"단계, 모드, 라운드, 반복, 미해결 수, 검증 보고서 상태를 보여 준다 (ga status).",
-  "props":{"json":{"type":"boolean","description":"true면 JSON으로 출력 (report_fresh, panel_ok, findings_unprocessed, build_ok 포함)"}}},
- {"name":"ga_verify","description":"검증 패널을 돌리고 보고서를 쓴다 (ga verify). 15분까지 걸릴 수 있다. 종료 코드 4는 과금 점검 실패, 5는 일부 모델 실패."},
- {"name":"ga_rule","description":"짧은 근거 규칙을 출력한다 (ga rule)."},
- {"name":"ga_enforce","description":"이 프로젝트의 격리 설정(설계 상태 폴더 쓰기 금지)을 다시 설치한다 (ga enforce)."},
- {"name":"ga_dispute","description":"검증 지적에 증거를 붙여 반박한다 (ga dispute FND-ID --evidence TEXT).",
+ {"name":"ga_status","description":"단계, 모드, 라운드, 반복, 미해결 수, 검증 보고서 상태를 보여 준다.",
+  "props":{"json":{"type":"boolean","description":"true면 JSON(report_fresh, panel_ok, findings_unprocessed, build_ok 포함)"}}},
+ {"name":"ga_verify","description":"검증 패널을 돌리고 보고서를 쓴다. 15분까지 걸린다. 종료 코드 4는 과금 점검 실패, 5는 일부 모델 실패."},
+ {"name":"ga_rule","description":"짧은 근거 규칙을 출력한다."},
+ {"name":"ga_enforce","description":"이 프로젝트의 격리 설정(설계 상태 폴더 쓰기 금지)을 다시 설치한다."},
+ {"name":"ga_dispute","description":"검증 지적에 증거를 붙여 반박한다.",
   "props":{"id":{"type":"string","minLength":1,"description":"지적 ID (예: FND-1)"},
            "evidence":{"type":"string","minLength":1,"description":"반박 증거"}},
   "required":["id","evidence"]}
