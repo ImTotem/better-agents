@@ -10,7 +10,7 @@ disable-model-invocation: true
 
 코드보다 먼저 아키텍처를 위에서 아래로 설계한다. 단계: `inputs` → `iterating`(반복 1..N) → `design-review` → `skeleton` → `implement`. 문서는 `docs/architecture/architecture.md` 하나다. 원장과 단계는 `docs/architecture/.state/`에 있고 `ga`만 쓴다.
 
-**상태는 MCP 도구로만 바꾼다.** 도구 전체 이름은 `mcp__plugin_better-agents_ga__<도구>`이고 여기서는 `ga_add`처럼 줄여 쓴다. 셸(Bash)은 운영체제 격리 안에서 돌아 상태 폴더에 못 쓴다. 셸에서는 읽기 명령(`ga status`, `ga check`, `ga rule`, `ga effect check`)만 쓴다. 상태를 바꾸는 셸 `ga` 명령은 실패하며 대신 쓸 MCP 도구를 알려 준다.
+**상태는 MCP 도구로만 바꾼다.** 도구 전체 이름은 `mcp__plugin_better-agents_ga__<도구>`이고 여기서는 `ga_add`처럼 줄여 쓴다. 셸(Bash)은 운영체제 격리 안에서 돌아 상태 폴더에 못 쓴다. 셸에서는 읽기 명령(`ga status`, `ga check`, `ga rule`, `ga effect check`)만 쓴다.
 
 ## 0. 원칙
 
@@ -24,7 +24,7 @@ disable-model-invocation: true
 **금지**
 - 단계가 허용하지 않는 파일을 바꾸지 않는다(1절 "결과 확인". `skeleton` 전에는 `docs/architecture/` 밖 전부). 셸로 바꾼 것도 걸린다.
 - `.state/` 아래(읽기만 된다), 플러그인 폴더, `.claude/settings*.json`, 상태 지문 저장 위치(`~/.local/state/grounded-arch`)를 쓰거나 고치거나 지우지 않는다.
-- `ga` 내부 명령(`user-command`, `gate`)과 훅 스크립트를 부르지 않는다.
+- `ga` 내부 명령(`user-command`, `gate`)과 훅 스크립트를 부르지 않는다. 셸에서 상태를 바꾸는 `ga` 명령을 실행하지 않는다(실패하며, 같은 일을 하는 MCP 도구 이름을 알려 준다).
 - 사용자의 확인, 답, 승인, 기각, 판정은 사용자가 `GA`로 시작하는 줄을 직접 입력해야만 기록된다. 대신 기록하거나 "사용자가 확인했다"고 쓰지 않는다. 대화의 "네"는 기록되지 않으니 그 줄을 입력해 달라고 한다.
 - 승인을 몰아서 받지 않는다. `GA 확인`·`GA 답` 줄을 미리 채운 묶음으로 건네지 말고, 항목마다 근거를 보여 주며 하나씩 묻는다. 승인 줄은 사용자가 검토를 마친 뒤 따로 요청한다.
 - `claude --bare`를 쓰거나 API 키(`ANTHROPIC_API_KEY` 등)를 설정하지 않는다. 모델 호출은 구독으로만 한다.
@@ -57,7 +57,7 @@ disable-model-invocation: true
 
 ### 기록 방법
 
-- 추가: `ga_add`에 `{"kind": 종류, "item": 객체}` → 새 ID. 규칙 위반이면 오류(종료 3)와 이유가 나오니 고쳐 다시 부른다. `id`, `kind`, `round`, `phase_added`, `status`, `resolution`과 드라이버가 아닌 항목의 `iteration`(현재 반복)은 `ga`가 채운다.
+- 추가: `ga_add`에 `{"kind": 종류, "item": 객체}` → 새 ID(종류별 모양과 예시는 3절 "항목 형식"). 규칙 위반이면 오류(종료 3)와 이유가 나오니 고쳐 다시 부른다. `id`, `kind`, `round`, `phase_added`, `status`, `resolution`과 드라이버가 아닌 항목의 `iteration`(현재 반복)은 `ga`가 채운다.
 - 수정: `ga_update`에 `{"id": "DRV-2", "patch": 바꿀 최상위 필드만}`. 객체 필드(`scenario` 등)는 통째로 준다. `id`, `kind`, `status`, `resolution`, `resolution_history`, `round`, `phase_added`, `answer`, `deviation`은 못 바꾸고, 항목은 지울 수 없다.
 - 해결된 항목(사용자 확인, 답, 근거 해결, 확인된 이탈)을 고치면 다시 `open`이 되고, 이전 해결과 답은 `resolution_history`에 남는다. 출력 안내대로 다시 확인이나 답을 받는다.
 - 직접 근거로 가정·질문 해결: `ga_resolve`에 `{"id":"ASM-n","source_type":"code","ref":"src/a.ts:12"}`(타입 `code`, `literature`, `measurement`). 결정(이탈 포함)에는 못 쓴다. 검증 패널이 그 근거를 다시 확인하므로 보고서가 낡는다.
@@ -68,7 +68,7 @@ disable-model-invocation: true
 
 1. `ga_render`로 원장을 문서에 반영하고 `ga check`(셸)로 원장 전체를 검사해 오류를 고친다(예: 결정의 `drivers`에 원장에 없는 DRV ID). 형식 오류가 남으면 턴 종료가 막힌다.
 2. `ga_verify`로 여러 모델의 검증 패널을 돌린다. 15분까지 걸리고, 2분이 지나면 Claude Code가 백그라운드로 돌리니 끝날 때까지 기다린다. 종료 5(일부 모델 실패)면 두 번까지 다시 실행하고, 그래도 실패하면 알린다. 종료 4(과금 점검 실패)나 2(설정·내부 오류)면 다시 실행하지 말고 `ga billing check claude`(셸) 출력이나 오류를 바로 알린다.
-3. 지적(`jq .findings docs/architecture/.state/report.json`)을 하나씩 처리한다. 지적과 증거는 있는 그대로 보여 준다.
+3. 지적을 읽는다(`jq .findings docs/architecture/.state/report.json`). 지적마다 아래 중 하나로 처리하고, 지적과 증거는 있는 그대로 보여 준다.
    - 맞으면 고친다(`ga_update`, `ga_resolve`, 문서 수정). 고친 지적도 그 보고서에 남으므로 다 고친 뒤 1로 돌아가 새 보고서를 받는다. 지적 번호는 보고서마다 새로 매겨진다.
    - 틀렸다고 보면 `ga_dispute`로 증거를 붙여 반박한다(예: `{"id":"FND-1","evidence":"지적은 DRV-2의 기준을 p95 > 2초로 읽었지만 원장의 measure는 \"p95 응답 시간 2초 이하\"다"}`). 지적과 반박을 보여 주고 `GA 판정 FND-n 반박인정` 또는 `GA 판정 FND-n 반박기각`을 요청한다. 반박이 기각되면 고치고 1로 돌아간다.
    - 지적을 넘기려고 `GA 기각`을 권하지 않는다. 기각(`GA 기각 FND-n 사유`)은 사용자가 스스로 정한다.
@@ -92,7 +92,55 @@ disable-model-invocation: true
 | `skeleton` | `phases/skeleton.md` | `GA 승인 뼈대` |
 | `implement` | `phases/implement.md` | 없음(새 기능은 `GA 새라운드`) |
 
-## 3. 명령 표
+## 3. 항목 형식
+
+`ga_add`에 주는 항목의 모양이다. 어느 단계에서 기록하든 같다.
+
+- 드라이버 출처는 직접 근거다(대개 `"type":"user"`와 사용자 원문 `quote`). 간접 근거뿐이면 `assumption`이다.
+- 코드로 확인한 것은 `fact`(출처 `code`, 실제로 있는 `경로:줄`)로, 코드만 보고 짐작한 의도(예: "이 계층 분리는 테스트를 위한 것으로 보인다")는 `assumption`(`code_convention`)으로 기록한다.
+- `assumption`의 `indirect_evidence.type`은 `code_convention`(기존 코드 관례), `framework_default`(프레임워크 기본값), `literature_norm`(문헌상 일반적인 경우), `goal_inference`(목표에서의 추론) 중 하나다.
+- **질문:** `ga_add`(kind `question`) 후 `ga_ask`에 `{"id":"Q-n"}`. 질문, 탐색 기록, 답에 따라 바뀌는 것을 보여 주고 `GA 답 Q-n 답변`을 요청한다. 답에서 나온 드라이버나 제약은 `ga_add`로 기록한다(출처 `user`, `quote`는 사용자 원문).
+
+**예시** (값은 예시다. `purpose`·`functional` 드라이버는 `scenario`만 빠진다.)
+
+```json
+{"kind":"driver","item":{"driver_type":"quality","statement":"성능: 판매 개시 직후 좌석 조회","horizon":"current","priority":"high","iteration":1,
+ "scenario":{"stimulus":"정상 운영 중, 판매 개시 후 1분간 5,000명이 좌석 조회","response":"남은 좌석 목록","measure":"p95 응답 시간 2초 이하"},
+ "source":{"type":"user","ref":"대화","quote":"오픈 직후 5천 명이 몰려도 2초 안에 좌석이 떠야 해요"}}}
+{"kind":"constraint","item":{"statement":"DB는 PostgreSQL","source":{"type":"user","ref":"대화","quote":"DB는 회사 표준인 PostgreSQL이어야 해요"}}}
+{"kind":"fact","item":{"statement":"HTTP 라우트는 한 곳에서 등록한다","source":{"type":"code","ref":"src/server.ts:12"}}}
+{"kind":"assumption","item":{"statement":"좌석 조회 트래픽은 판매 개시 후 10분 안에 대부분 몰린다",
+ "indirect_evidence":[{"type":"goal_inference","ref":"DRV-2의 사용자 발언 '오픈 직후 5천 명이 몰려도'"}],
+ "search_log":{"code":"해당 없음: 새 프로젝트라 코드가 없다",
+   "docs":"README.md, CLAUDE.md, docs/, 메모리 디렉터리 확인: 트래픽 지속 시간 언급 없음",
+   "conversation":"사용자는 오픈 직후 집중만 말했고 지속 시간은 말하지 않았다",
+   "web":"해당 없음: 이 서비스 고유의 트래픽 패턴이라 일반 문헌으로 정할 수 없다"},
+ "alternatives":[{"assumption":"하루 내내 고르게 분산된다","reason":"사용자가 오픈 직후 집중을 명시했다"}]}}
+{"kind":"question","item":{"question":"결제가 끝나지 않은 좌석은 몇 분 동안 다른 사람이 못 사게 잡아 둬야 하나요?",
+ "search_log":{"code":"해당 없음: 새 프로젝트라 코드가 없다",
+   "docs":"README.md, CLAUDE.md, docs/, 메모리 디렉터리 확인: 좌석 점유 정책 없음",
+   "conversation":"점유 시간 언급 없음",
+   "web":"'ticket seat hold timeout' 검색: 서비스마다 정책이 달라 이 서비스의 값을 정할 근거가 없다"},
+ "impact":"좌석 점유 시간 요구사항과 동시 예매 시나리오의 측정 기준이 달라진다"}}
+```
+
+**결정**(`decision`)
+- `choice`: 고른 것. `rationale`: 출처 1개 이상. `drivers`: 다루는 DRV ID 1개 이상.
+- `alternatives`: 버린 후보와 이유. 이유는 어떤 드라이버의 어떤 시나리오를 왜 못 맞추는지로 쓴다. 허수아비 대안은 검증에서 반려된다.
+- 사용자 제약 때문에 대안이 없으면 `[{"none":"user_constraint","source":{"type":"user","ref":"대화","quote":"사용자 원문"}}]`로 쓴다.
+- 추가한 뒤 `ga check`를 실행한다. 없는 드라이버를 가리키는지는 원장 전체 검사에서만 잡힌다.
+
+```json
+{"kind":"decision","item":{"element":"좌석 조회 경로","choice":"캐시 어사이드(cache-aside) 읽기 캐시",
+ "rationale":[{"type":"literature","ref":"https://learn.microsoft.com/en-us/azure/architecture/patterns/cache-aside"},{"type":"user","ref":"대화","quote":"오픈 직후 5천 명이 몰려도 2초 안에 좌석이 떠야 해요"}],
+ "alternatives":[{"option":"DB 직접 조회와 인덱스","reason":"DRV-2 시나리오(1분에 5,000명 조회)의 요청이 모두 DB로 가 p95 2초를 맞추기 어렵다"},
+                 {"option":"좌석 현황 푸시","reason":"DRV-2는 조회 응답 시간을 요구하는데, 푸시는 좌석이 바뀔 때마다 5,000명에게 보내 송신량이 더 크다"}],
+ "drivers":["DRV-2"]}}
+```
+
+**대응표**(`mapping`): 설계 요소(`element`, architecture.md 5절의 이름)와 위치(`path`, 루트 기준 상대 경로)를 잇고 `change`를 `new`, `changed`, `kept` 중 하나로 쓴다. 예: `{"kind":"mapping","item":{"element":"좌석 조회 서비스","path":"src/seat/query.ts","change":"new"}}`
+
+## 4. 명령 표
 
 **상태를 바꾸는 MCP 도구** (서버 `ga`. 모두 선택 인자 `root`를 받지만 보통 주지 않는다)
 

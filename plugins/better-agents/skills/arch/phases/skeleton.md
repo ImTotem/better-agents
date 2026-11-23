@@ -2,7 +2,7 @@
 
 구조만 만들고 동작은 만들지 않는다.
 
-1. **대응표 먼저:** `ga_add`(kind `mapping`)로 설계 요소(`element`, architecture.md 5절의 이름)와 위치(`path`, 루트 기준 상대 경로)를 잇고 `change`(`new`, `changed`, `kept`)를 쓴다. 예: `{"kind":"mapping","item":{"element":"좌석 조회 서비스","path":"src/seat/query.ts","change":"new"}}`
+1. **대응표 먼저:** 설계 요소와 코드 위치를 잇는 `mapping`을 `ga_add`로 기록한다(SKILL.md 3절 "항목 형식").
    - 새 프로젝트: 요소마다 코드 위치(파일이나 디렉터리)를 기록한다.
    - 기존 코드: 만들거나 바꿀 **파일마다** 기록한다. `new`·`changed` 파일만 쓸 수 있고 경로가 정확히 같아야 한다(셸로 바꾼 파일도 SKILL.md 1절 결과 확인에서 같다). 바꾸지 않는 관련 요소는 `kept`로 둔다.
 2. **뼈대:** 폴더, 모듈, 인터페이스와 타입, 빈 함수를 만든다. 함수 본문에는 미구현 표시만 둔다(예: `throw new Error("not implemented")`, `raise NotImplementedError`). 로직은 쓰지 않는다.
