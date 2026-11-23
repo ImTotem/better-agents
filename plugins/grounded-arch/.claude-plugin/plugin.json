@@ -1,7 +1,13 @@
 {
   "name": "grounded-arch",
   "version": "0.1.0",
-  "description": "근거 기반 아키텍처 설계 하네스: 원장, 게이트, 검증 패널을 갖춘 ga CLI",
-  "author": { "name": "sungbin" },
-  "keywords": ["architecture", "design", "grounding"]
+  "description": "근거 기반 아키텍처 설계 플러그인: 원장, 게이트, 검증 패널을 갖춘 ga CLI",
+  "author": {
+    "name": "sungbin"
+  },
+  "keywords": [
+    "architecture",
+    "design",
+    "grounding"
+  ]
 }

@@ -28,6 +28,6 @@ Claude가 사용자에게 승인이나 방향 선택을 물을 때 늘 같은 �
 
 ## 설치와 끄기
 
-- 설치: `claude plugin marketplace add <이 저장소 경로>` 다음 `claude plugin install explain-clearly@ai-tools`
-- 끄기: `claude plugin disable explain-clearly@ai-tools`
+- 설치: `claude plugin marketplace add <이 저장소 경로>` 다음 `claude plugin install explain-clearly@better-agents`
+- 끄기: `claude plugin disable explain-clearly@better-agents`
 - 양식 바꾸기: `rules/guide.md`와 `rules/reminder.md`를 고칩니다. 둘의 순서와 이름표를 같게 유지합니다.
