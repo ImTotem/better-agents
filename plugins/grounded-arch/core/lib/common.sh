@@ -3,8 +3,8 @@
 # --- code outside the OS sandbox (spec 5.5, P28) -------------------------------------------------
 # Hooks, the MCP server, the adapter and ga run outside the sandbox. Each entry point starts by saving
 # the caller's PATH as GA_USER_PATH and setting PATH=/usr/bin:/bin:/usr/sbin:/sbin, so every tool ga
-# itself runs (tail, sed, mktemp, sha256sum ...) is a system tool. jq is /usr/bin/jq only; git is the
-# developer tools' own binary (ga_git_resolve). Only the verifier runners, their preflight and the
+# itself runs (tail, sed, mktemp, sha256sum ...) is a system tool. jq comes from a fixed list (P35);
+# git is the developer tools' own binary (ga_git_resolve); temp files go in a private folder (P33). Only the verifier runners, their preflight and the
 # sandboxed build check use the user's PATH (ga_user_path). Nothing in the environment can point ga
 # at other tools outside test mode (GA_TEST_MODE=1).
 
@@ -38,11 +38,31 @@ ga_user_path() { # [DIR...]
   printf '%s' "$out"
 }
 
-# jq is /usr/bin/jq only (P28); without it the callers' jq-unusable paths apply. The test suite
-# simulates a missing or broken jq (honored only in test mode).
-GA_JQ=/usr/bin/jq
+# P35: jq is the first executable of /usr/bin/jq, /opt/homebrew/bin/jq, /usr/local/bin/jq -- never
+# found through PATH; with none, the callers' jq-unusable paths apply. The test suite can replace the
+# list or simulate a missing or broken jq (honored only in test mode).
+GA_JQ=/nonexistent/jq
+_ga_jqs=/usr/bin/jq:/opt/homebrew/bin/jq:/usr/local/bin/jq
+if [ "${GA_TEST_MODE:-}" = 1 ] && [ -n "${GA_TEST_JQ_CANDIDATES:-}" ]; then _ga_jqs=$GA_TEST_JQ_CANDIDATES; fi
+_ga_o=$IFS; IFS=:
+for _ga_j in $_ga_jqs; do case "$_ga_j" in /*) if [ -x "$_ga_j" ]; then GA_JQ=$_ga_j; break; fi ;; esac; done
+IFS=$_ga_o; unset _ga_jqs _ga_o _ga_j
 if [ "${GA_TEST_MODE:-}" = 1 ] && [ -n "${GA_TEST_JQ:-}" ]; then GA_JQ=$GA_TEST_JQ; fi
 jq() { "$GA_JQ" "$@"; }
+
+# P33: ga's temp files outside the sandbox go in a private folder under the data dir (the user's
+# own, mode 700), never in the user's TMPDIR, which the agent's sandboxed shell can write. The entry
+# points that run outside the sandbox (hooks, the MCP server) make it ga's TMPDIR; ga run from a shell
+# keeps the shell's TMPDIR. Prints the folder; rc 1 when it cannot be made, or exists and is not a
+# folder of this user with mode 700 (callers fail closed).
+ga_private_tmp() {
+  local d=${GA_DATA_DIR:-$HOME/.local/state/grounded-arch}/tmp m
+  if [ ! -e "$d" ] && [ ! -L "$d" ]; then mkdir -p "${d%/*}" 2>/dev/null; mkdir -m 700 "$d" 2>/dev/null; fi
+  [ -d "$d" ] && [ ! -L "$d" ] && [ -O "$d" ] || return 1
+  m=$(stat -c %a "$d" 2>/dev/null || stat -f %Lp "$d" 2>/dev/null) || m=""
+  [ "$m" = 700 ] || return 1
+  printf '%s\n' "$d"
+}
 
 # git is resolved once, on first use, and never from the environment. On macOS /usr/bin/git is the
 # xcrun shim, which reads $TMPDIR/xcrun_db and DEVELOPER_DIR and can run a program from there: the

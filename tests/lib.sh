@@ -86,6 +86,13 @@ fake_tools() { # DIR MARKER
   done
 }
 
+# P33: a folder's mtime (seconds) after aging it to 2000-01-01, so any file created or removed in it
+# afterwards shows as a different value.
+aged_dir() { touch -t 200001010000 "$1"; dir_mtime "$1"; } # DIR -> its aged mtime
+dir_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }
+# P33: ga's private temp folder for the test HOME.
+priv_tmp() { echo "${GA_DATA_DIR:-$HOME/.local/state/grounded-arch}/tmp"; }
+
 set_state() { # ROOT JQ_EXPR   (test-only: edits state.json directly)
   local sd f tmp; sd=$(_state_dir "$1"); f=$sd/state.json
   [ -f "$f" ] || echo '{"version":1,"mode":"greenfield","phase":"inputs","paused":false,"round":1,"iteration":0,"iteration_count":0,"transcript_path":null}' >"$f"

@@ -6,14 +6,35 @@
 # bash 3.2 + jq only.
 
 # Hooks run outside the OS sandbox (spec 5.5, P28): only system tools run here. The caller's PATH is
-# kept as GA_USER_PATH for the verifier runners and the sandboxed build check; jq is /usr/bin/jq.
+# kept as GA_USER_PATH for the verifier runners and the sandboxed build check.
 GA_USER_PATH=${GA_USER_PATH:-$PATH}
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export GA_USER_PATH PATH
-GA_JQ=/usr/bin/jq
-# The test suite simulates a missing or broken jq (honored only in test mode).
+# P35: jq from a fixed list, never PATH (the same list as core/lib/common.sh). The test suite can
+# replace the list or simulate a missing or broken jq (honored only in test mode).
+GA_JQ=/nonexistent/jq
+_l=/usr/bin/jq:/opt/homebrew/bin/jq:/usr/local/bin/jq
+if [ "${GA_TEST_MODE:-}" = 1 ] && [ -n "${GA_TEST_JQ_CANDIDATES:-}" ]; then _l=$GA_TEST_JQ_CANDIDATES; fi
+_o=$IFS; IFS=:
+for _j in $_l; do case "$_j" in /*) if [ -x "$_j" ]; then GA_JQ=$_j; break; fi ;; esac; done
+IFS=$_o; unset _l _o _j
 if [ "${GA_TEST_MODE:-}" = 1 ] && [ -n "${GA_TEST_JQ:-}" ]; then GA_JQ=$GA_TEST_JQ; fi
 jq() { "$GA_JQ" "$@"; }
+# P33: the hook's and ga's temp files go in ga's private folder (the user's own, mode 700, under the
+# data dir; the same rule as ga_private_tmp in core/lib/common.sh), never in the user's TMPDIR, which
+# the agent's sandboxed shell can write. The user's TMPDIR is kept as GA_USER_TMPDIR.
+GA_USER_TMPDIR=${GA_USER_TMPDIR:-${TMPDIR:-}}
+_t=${GA_DATA_DIR:-$HOME/.local/state/grounded-arch}/tmp
+if [ ! -e "$_t" ] && [ ! -L "$_t" ]; then mkdir -p "${_t%/*}" 2>/dev/null; mkdir -m 700 "$_t" 2>/dev/null; fi
+TMP_OK=0
+if [ -d "$_t" ] && [ ! -L "$_t" ] && [ -O "$_t" ] &&
+   [ "$(stat -c %a "$_t" 2>/dev/null || stat -f %Lp "$_t" 2>/dev/null)" = 700 ]; then
+  TMP_OK=1; TMPDIR=$_t
+else
+  TMPDIR=/nonexistent/ga-private-tmp
+fi
+export TMPDIR GA_USER_TMPDIR
+unset _t
 
 _self=${BASH_SOURCE[0]}
 while [ -L "$_self" ]; do
@@ -40,6 +61,21 @@ jqi() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null; }
 case "${CLAUDE_PROJECT_DIR:-}" in /*) GA_SESSION_ROOT=$CLAUDE_PROJECT_DIR ;; *) GA_SESSION_ROOT=$PWD ;; esac
 export GA_SESSION_ROOT
 
+# P33: without the private temp folder nothing can be judged (`ga root` needs no temp file). While a
+# design exists for the session: writes and prompts are refused, shell commands while it is in force,
+# Stop and SessionStart tell the user; the user's fix is to check and remove the folder. Without a
+# design nothing changes.
+if [ "$TMP_OK" != 1 ]; then
+  _m="ga의 임시 폴더(GA_DATA_DIR 또는 ~/.local/state/grounded-arch 아래 tmp)가 이 사용자 소유의 권한 700 폴더가 아니어서 판정하지 못합니다. 사용자에게 알리세요: 사용자가 그 폴더를 확인하고 지우면 다음 호출에 다시 만들어집니다"
+  case "$event" in
+    pre-write) "$GA" root >/dev/null 2>&1 && printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"grounded-arch: %s"}}\n' "$_m" ;;
+    pre-bash) "$GA" root --active >/dev/null 2>&1 && printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"grounded-arch: %s"}}\n' "$_m" ;;
+    user-prompt) "$GA" root >/dev/null 2>&1 && printf '{"decision":"block","reason":"grounded-arch: %s. GA 줄은 기록되지 않았습니다"}\n' "$_m" ;;
+    stop | session-start) "$GA" root >/dev/null 2>&1 && printf '{"systemMessage":"grounded-arch: %s"}\n' "$_m" ;;
+  esac
+  exit 0
+fi
+
 # R35-1: without a working jq, or with an event that is not a JSON object, the adapter cannot
 # read the tool call (`ga root` needs no jq). Shell commands are denied while a design is in force
 # for the session directory; a PAUSED marker opens them (the recovery). P21/P32: the write target is
@@ -49,9 +85,9 @@ case "$event" in
   pre-write | pre-bash)
     if ! printf '%s' "$input" | jq -e 'type == "object"' >/dev/null 2>&1; then
       if [ "$event" = pre-bash ] && "$GA" root --active >/dev/null 2>&1; then
-        printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"grounded-arch: jq를 실행할 수 없거나 훅 입력을 읽을 수 없어 판정하지 못했으므로 막습니다. 사용자에게 알리세요: jq(/usr/bin/jq)가 동작하도록 고치거나, 사용자가 docs/architecture/.state/PAUSED 파일을 직접 만들면(touch) 셸 명령이 풀립니다."}}'
+        printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"grounded-arch: jq를 실행할 수 없거나 훅 입력을 읽을 수 없어 판정하지 못했으므로 막습니다. 사용자에게 알리세요: jq(/usr/bin/jq, /opt/homebrew/bin/jq, /usr/local/bin/jq 중 하나)가 동작하도록 고치거나, 사용자가 docs/architecture/.state/PAUSED 파일을 직접 만들면(touch) 셸 명령이 풀립니다."}}'
       elif [ "$event" = pre-write ] && "$GA" root >/dev/null 2>&1; then
-        printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"grounded-arch: jq를 실행할 수 없거나 훅 입력을 읽을 수 없어 어느 파일에 쓰는지 판정하지 못했으므로 막습니다. 설계 상태 폴더와 상태 지문 저장 위치를 지키기 위해 일시정지(PAUSED) 중에도 쓰기 도구는 막힙니다. 사용자에게 알리세요: jq(/usr/bin/jq)가 동작하도록 고쳐야 풀립니다(셸 명령은 일시정지로 풀 수 있습니다)."}}'
+        printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"grounded-arch: jq를 실행할 수 없거나 훅 입력을 읽을 수 없어 어느 파일에 쓰는지 판정하지 못했으므로 막습니다. 설계 상태 폴더와 상태 지문 저장 위치를 지키기 위해 일시정지(PAUSED) 중에도 쓰기 도구는 막힙니다. 사용자에게 알리세요: jq(/usr/bin/jq, /opt/homebrew/bin/jq, /usr/local/bin/jq 중 하나)가 동작하도록 고쳐야 풀립니다(셸 명령은 일시정지로 풀 수 있습니다)."}}'
       fi
       exit 0
     fi

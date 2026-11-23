@@ -19,7 +19,8 @@
 #        enforce.sh exec ROOT [--protect PATH]... -- CMD [ARG...]
 #                                  runs CMD in an OS sandbox (macOS sandbox-exec, Linux bwrap) that
 #                                  denies writes by default (P27): CMD may write ROOT, a fresh temp
-#                                  folder (its TMPDIR, TMP and TEMP; removed afterwards) and the folders
+#                                  folder in ga's private temp folder (P33; its TMPDIR, TMP and TEMP;
+#                                  removed afterwards) and the folders
 #                                  of the effective sandbox.filesystem.allowWrite, but never the git
 #                                  folder, .claude, .mcp.json, the state folder, the plugin folder, the
 #                                  Claude Code files in the home directory or each PATH. CMD gets the
@@ -27,13 +28,29 @@
 #                                  there is no sandbox tool
 # No git command is run. bash 3.2 + jq only. status runs on every shell command: one jq call.
 
-# This runs outside the OS sandbox (spec 5.5, P28): only system tools, jq is /usr/bin/jq.
+# This runs outside the OS sandbox (spec 5.5, P28): only system tools; jq from a fixed list, never
+# PATH (P35, the same list as core/lib/common.sh; test overrides in test mode only).
 GA_USER_PATH=${GA_USER_PATH:-$PATH}
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export GA_USER_PATH PATH
-GA_JQ=/usr/bin/jq
+GA_JQ=/nonexistent/jq
+_l=/usr/bin/jq:/opt/homebrew/bin/jq:/usr/local/bin/jq
+if [ "${GA_TEST_MODE:-}" = 1 ] && [ -n "${GA_TEST_JQ_CANDIDATES:-}" ]; then _l=$GA_TEST_JQ_CANDIDATES; fi
+_o=$IFS; IFS=:
+for _j in $_l; do case "$_j" in /*) if [ -x "$_j" ]; then GA_JQ=$_j; break; fi ;; esac; done
+IFS=$_o; unset _l _o _j
 if [ "${GA_TEST_MODE:-}" = 1 ] && [ -n "${GA_TEST_JQ:-}" ]; then GA_JQ=$GA_TEST_JQ; fi
 jq() { "$GA_JQ" "$@"; }
+
+# P33: ga's private temp folder (the user's own, mode 700, under the data dir; the same rule as
+# ga_private_tmp in core/lib/common.sh). Prints it; rc 1 when unusable.
+private_tmp() {
+  local d=${GA_DATA_DIR:-$HOME/.local/state/grounded-arch}/tmp
+  if [ ! -e "$d" ] && [ ! -L "$d" ]; then mkdir -p "${d%/*}" 2>/dev/null; mkdir -m 700 "$d" 2>/dev/null; fi
+  [ -d "$d" ] && [ ! -L "$d" ] && [ -O "$d" ] || return 1
+  [ "$(stat -c %a "$d" 2>/dev/null || stat -f %Lp "$d" 2>/dev/null)" = 700 ] || return 1
+  printf '%s\n' "$d"
+}
 
 _self=${BASH_SOURCE[0]}
 while [ -L "$_self" ]; do
@@ -347,7 +364,7 @@ allow_write_paths() {
 
 do_exec() { # [--protect PATH]... -- CMD...
   local -a extra=() prot=() allow=() bw_args=()
-  local p a seen=$'\n' prof sbx bw rt rc
+  local p a seen=$'\n' prof sbx bw pt rt rc
   while [ $# -gt 0 ]; do
     case "$1" in
       --protect) [ $# -ge 2 ] || die "$USAGE" 2; extra+=("$2"); shift 2 ;;
@@ -378,12 +395,16 @@ do_exec() { # [--protect PATH]... -- CMD...
     exit 125
   fi
 
-  # The writable folders: the project, a temp folder made for this run, the user's allowWrite folders.
-  rt=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/ga-build.XXXXXX") && rt=$(phys_dir "$rt") ||
+  # The writable folders: the project, the user's allowWrite folders, and a temp folder made for this
+  # run inside ga's private temp folder (P33: never in the user's TMPDIR, where the agent's shell could
+  # swap it for a link before it is resolved). That folder lies under the fingerprint store, so it is
+  # allowed again after the protected denies.
+  pt=$(private_tmp) || die "enforce: ga의 임시 폴더(${GA_DATA_DIR:-$HOME/.local/state/grounded-arch}/tmp)가 이 사용자 소유의 권한 700 폴더가 아니어서 빌드 확인을 실행하지 않았습니다. 사용자가 그 폴더를 확인하고 지우면 다시 만들어집니다" 2
+  rt=$(/usr/bin/mktemp -d "$pt/ga-build.XXXXXX") && rt=$(phys_dir "$rt") ||
     die "enforce: 빌드 확인용 임시 폴더를 만들 수 없습니다" 2
   trap 'rm -rf "$rt"' EXIT
   trap 'exit 143' TERM INT HUP
-  allow=("$ROOT" "$rt")
+  allow=("$ROOT")
   while IFS= read -r p; do [ -n "$p" ] && allow+=("$p"); done <<EOF
 $(allow_write_paths)
 EOF
@@ -406,15 +427,16 @@ EOF
         a=${a%/*}
       done
     done
-    prof="$prof)"
+    prof="$prof)(allow file-write* (subpath $(sb_str "$rt")))"
     env TMPDIR="$rt" TMP="$rt" TEMP="$rt" PATH="$GA_USER_PATH" "$sbx" -p "$prof" "$@" || rc=$?
   else
     # bwrap (Linux, untested here): the whole tree read-only, the writable folders bound writable on
-    # top, then the protected paths read-only again. Bind mounts follow the folder, so a renamed
-    # parent keeps them read-only.
+    # top, then the protected paths read-only again, then the run's temp folder. Bind mounts follow
+    # the folder, so a renamed parent keeps them read-only.
     bw_args=(--ro-bind / / --dev /dev --proc /proc)
     for p in "${allow[@]}"; do bw_args+=(--bind "$p" "$p"); done
     for p in "${prot[@]}"; do bw_args+=(--ro-bind-try "$p" "$p"); done
+    bw_args+=(--bind "$rt" "$rt")
     env TMPDIR="$rt" TMP="$rt" TEMP="$rt" PATH="$GA_USER_PATH" "$bw" "${bw_args[@]}" -- "$@" || rc=$?
   fi
   exit "$rc"

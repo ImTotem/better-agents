@@ -24,6 +24,11 @@ unset _d
 GA_MCP_GA=$GA_MCP_CORE/bin/ga
 # ga_find_root, ga_canon and GA_VERSION: the root rules must be ga's own.
 . "$GA_MCP_CORE/lib/common.sh" || { echo "ga-mcp: core/lib/common.sh를 읽을 수 없습니다" >&2; exit 2; }
+# P33: the server's and ga's temp files go in ga's private folder, never in the user's TMPDIR (kept as
+# GA_USER_TMPDIR for the verifier runners). An unusable private folder: refuse to start (fail closed).
+GA_USER_TMPDIR=${GA_USER_TMPDIR:-${TMPDIR:-}}
+TMPDIR=$(ga_private_tmp) || { echo "ga-mcp: ga 임시 폴더(${GA_DATA_DIR:-$HOME/.local/state/grounded-arch}/tmp)가 이 사용자 소유의 권한 700 폴더가 아니어서 시작하지 않습니다. 사용자가 그 폴더를 확인하고 지우면 다시 만들어집니다" >&2; exit 2; }
+export TMPDIR GA_USER_TMPDIR
 GA_MCP_VERSIONS="2025-11-25 2025-06-18 2025-03-26 2024-11-05" # newest first
 GA_MCP_TICK=60 # seconds between progress notifications while a tool runs
 if [ "${GA_TEST_MODE:-}" = 1 ]; then

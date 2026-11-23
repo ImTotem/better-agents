@@ -313,3 +313,18 @@ test_p28_server_runs_only_system_tools() {
   [ ! -e "$m" ] || _fail "the MCP server ran tools from the user's PATH: $(sort -u "$m" | tr '\n' ' ')"
   [ -f "$r/docs/architecture/.state/state.json" ] || _fail "ga_init did not run"
 }
+
+# P33 (follow-up): the server's and ga's temp files go in ga's private folder, never in the user's TMPDIR;
+# the verifier runner still gets the user's TMPDIR.
+test_p33_server_keeps_temp_files_out_of_tmpdir() {
+  local r T m0 in out
+  use_fake_claude; r=$(mk_project); export CLAUDE_PROJECT_DIR=$r GA_HARNESS=claude-code; T=$(mktemp -d)
+  in=$(mktemp); printf '%s\n' "$INIT" "$INITD" "$(mcall 1 ga_init '{}')" "$(mcall 2 ga_add "$(add_args assumption "$FIX/asm.json")")" \
+    "$(mcall 3 ga_render '{}')" "$(mcall 4 ga_status '{}')" >"$in"
+  m0=$(aged_dir "$T")
+  out=$(TMPDIR=$T "$MCP_SERVER" <"$in" 2>/dev/null)
+  assert_eq false "$(iserr "$out" 1)"; assert_eq false "$(iserr "$out" 4)"
+  assert_eq "$m0" "$(dir_mtime "$T")"; assert_eq "" "$(ls -A "$(priv_tmp)")"
+  # the runner and its preflight get the user's TMPDIR, not ga's private folder
+  ( . "$CORE/lib/common.sh"; . "$CORE/lib/billing.sh"; GA_USER_TMPDIR=$T; TMPDIR=$(priv_tmp); assert_eq "$T" "$(_ga_runner_tmpdir)" )
+}

@@ -83,6 +83,9 @@ _ga_in_any() { # DIR PREFIX... -> true when DIR is one of the PREFIXes or below 
 # session root only.
 _ga_runner_path() { ga_user_path "${GA_ROOT:-}" "${GA_SESSION_ROOT:-}"; }
 
+# TMPDIR for a runner or its preflight: the user's (P33: ga's private temp folder is ga's own).
+_ga_runner_tmpdir() { printf '%s' "${GA_USER_TMPDIR:-${TMPDIR:-/tmp}}"; }
+
 # Sets GA_STRIP_ARGS=(-u NAME ...) from the record's strip_env. Returns 4 when unusable.
 _ga_strip_args() { # RECFILE
   local out v
@@ -139,7 +142,7 @@ ga_billing_check_rec() { # RUNNER RECFILE
   # The runner-specific preflight runs with the billing environment already stripped.
   errf=$(mktemp "${TMPDIR:-/tmp}/ga-pre.XXXXXX") || { ga_billing_refuse "임시 파일을 만들 수 없습니다"; return 4; }
   rc=0
-  out=$(env "${GA_STRIP_ARGS[@]}" PATH="$(_ga_runner_path)" GA_RUNNER_RECORD="$rec" /bin/bash "$script" "$PWD" "${GA_ROOT:-}" </dev/null 2>"$errf") || rc=$?
+  out=$(env "${GA_STRIP_ARGS[@]}" PATH="$(_ga_runner_path)" TMPDIR="$(_ga_runner_tmpdir)" GA_RUNNER_RECORD="$rec" /bin/bash "$script" "$PWD" "${GA_ROOT:-}" </dev/null 2>"$errf") || rc=$?
   if [ "$rc" -ne 0 ]; then
     [ -n "$out" ] || out=$(head -n 1 "$errf")
     rm -f "$errf"
@@ -214,7 +217,7 @@ EOF
       esac
     done
   done
-  env "${GA_STRIP_ARGS[@]}" PATH="$(_ga_runner_path)" GA_IN_RUNNER=1 "$cpath" "$@"
+  env "${GA_STRIP_ARGS[@]}" PATH="$(_ga_runner_path)" TMPDIR="$(_ga_runner_tmpdir)" GA_IN_RUNNER=1 "$cpath" "$@"
 }
 
 cmd_billing() {

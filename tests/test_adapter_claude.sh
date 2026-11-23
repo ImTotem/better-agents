@@ -196,3 +196,43 @@ test_p32_jq_unusable_pause_keeps_state_and_store_locked() { local r p out
     assert_contains "$out" '"permissionDecision":"deny"'
   done
   assert_eq "" "$(ev bash_redirect "$r" | (cd "$r" && GA_TEST_JQ=/nonexistent/jq hk pre-bash))"; }
+
+# --- follow-up (P33): the hooks' and ga's temp files go in a private folder of the data dir (the user's,
+# mode 700), never in the user's TMPDIR, which the agent's sandboxed shell can write ---
+test_p33_hooks_keep_temp_files_out_of_tmpdir() { local p T m0 e
+  p=$(fp15); export CLAUDE_PROJECT_DIR=$p; T=$(mktemp -d); e=$(mktemp -d)
+  hev "$p" '{"source":"startup"}' >"$e/ss"; hev "$p" '{"prompt":"GA 일시정지"}' >"$e/pz"; hev "$p" '{"prompt":"GA 재개"}' >"$e/rs"
+  jq -nc --arg c "$p" '{cwd:$c,tool_name:"Write",tool_input:{file_path:($c + "/docs/architecture/x.md"),content:"x"}}' >"$e/pw"
+  hev "$p" '{"tool_name":"Bash","tool_input":{"command":"ls"}}' >"$e/pb"; hev "$p" '{"stop_hook_active":false}' >"$e/st"
+  echo 'int y;' >>"$p/src/a.c"; m0=$(aged_dir "$T")
+  ( export TMPDIR=$T
+    hk session-start <"$e/ss"; hk pre-write <"$e/pw"; hk pre-bash <"$e/pb"; hk stop <"$e/st"; hk user-prompt <"$e/pz"; hk user-prompt <"$e/rs"
+  ) >/dev/null 2>&1 || true
+  assert_eq "$m0" "$(dir_mtime "$T")" # nothing was created in (or removed from) the user's TMPDIR
+  [ -d "$(priv_tmp)" ] || _fail "no private temp folder"
+  assert_eq 700 "$(stat -c %a "$(priv_tmp)" 2>/dev/null || stat -f %Lp "$(priv_tmp)")"
+  assert_eq "" "$(ls -A "$(priv_tmp)")" # and nothing is left in it
+  assert_eq false "$(jq -r .paused "$p/docs/architecture/.state/state.json")"; } # the GA lines did run
+# A private folder that is not a folder of this user with mode 700 fails closed while a design exists.
+test_p33_bad_private_tmp_fails_closed() { local r q out
+  r=$(inputs_root); mkdir -p "$(priv_tmp)"; chmod 755 "$(priv_tmp)"
+  out=$(ev write_archdoc "$r" | (cd "$r" && hk pre-write)); assert_eq deny "$(jq -r .hookSpecificOutput.permissionDecision <<<"$out")"
+  assert_contains "$(jq -r .hookSpecificOutput.permissionDecisionReason <<<"$out")" "700"
+  out=$(ev prompt_plain "$r" | (cd "$r" && hk user-prompt)); assert_eq block "$(jq -r .decision <<<"$out")"
+  out=$(printf '%s\n' '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}' |
+        CLAUDE_PROJECT_DIR=$r "$CORE/mcp/server.sh" 2>&1) || true; assert_contains "$out" "700"; assert_not_contains "$out" '"result"'
+  q=$(mk_project); assert_eq "" "$(ev write_src "$q" | (cd "$q" && hk pre-write))" # no design: nothing changes
+  rmdir "$(priv_tmp)"; ln -s "$HOME" "$(priv_tmp)"
+  out=$(ev write_archdoc "$r" | (cd "$r" && hk pre-write)); assert_eq deny "$(jq -r .hookSpecificOutput.permissionDecision <<<"$out")"; }
+
+# --- follow-up (P35): jq is the first executable of /usr/bin/jq, /opt/homebrew/bin/jq, /usr/local/bin/jq,
+# never from PATH; with none, the jq-unusable path applies ---
+test_p35_jq_from_the_fixed_list() { local r d out
+  r=$(inputs_root); d=$(mktemp -d); printf '#!/bin/bash\n: >"%s"\nexec /usr/bin/jq "$@"\n' "$HOME/jq-ran" >"$d/jq"; chmod +x "$d/jq"
+  out=$(ev write_src "$r" | (cd "$r" && GA_TEST_JQ_CANDIDATES="/nonexistent/a/jq:$d/jq:/usr/bin/jq" hk pre-write))
+  assert_eq deny "$(jq -r .hookSpecificOutput.permissionDecision <<<"$out")"; [ -e "$HOME/jq-ran" ] || _fail "the second candidate was not used"
+  out=$(ev write_archdoc "$r" | (cd "$r" && GA_TEST_JQ_CANDIDATES="/nonexistent/a/jq:/nonexistent/b/jq" hk pre-write))
+  assert_eq deny "$(jq -r .hookSpecificOutput.permissionDecision <<<"$out")"; assert_contains "$out" "jq"
+  rm -f "$HOME/jq-ran"
+  ( GA_CORE=$CORE; GA_TEST_JQ_CANDIDATES="relative/jq:$d/jq"; . "$CORE/lib/common.sh"; [ "$GA_JQ" = "$d/jq" ] ) || _fail "core did not take the first executable absolute candidate"
+  out=$(PATH="$d:$PATH" "$PLUGIN/adapters/claude-code/enforce.sh" status "$r"); [ ! -e "$HOME/jq-ran" ] || _fail "jq was found through PATH"; }
